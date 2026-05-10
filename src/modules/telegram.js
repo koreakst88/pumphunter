@@ -443,6 +443,11 @@ if (bot) {
 
       const marketData = await scanner.getFullCoinDataWS(symbol);
       logger.info(`Результат ручного скана ${symbol}: ${JSON.stringify(marketData)}`);
+
+      if (!scanner.isTradableOnBybit(symbol)) {
+        return ctx.reply(`${buildScanSummary(symbol, marketData)}\n\n❌ Монеты нет на Bybit linear, сигнал не отправляется.`);
+      }
+
       const signalType = scanner.getSignalType(marketData);
 
       if (signalType === 'SHORT') {

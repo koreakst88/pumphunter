@@ -6,8 +6,19 @@ const client = axios.create({
   baseURL: config.BINANCE_BASE_URL,
   timeout: 10_000,
 });
+const bybitClient = axios.create({
+  baseURL: 'https://api.bybit.com',
+  timeout: 10_000,
+  headers: {
+    'User-Agent': 'Mozilla/5.0',
+    Accept: 'application/json',
+  },
+});
+const BYBIT_SYMBOL_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+let bybitSymbolCache = null;
+let bybitSymbolCacheUpdatedAt = 0;
 
 function buildProxyUrl(path, params = {}) {
   const queryString = new URLSearchParams(params).toString();
@@ -152,6 +163,47 @@ async function safeRequest(label, fallback, handler) {
   } catch (error) {
     logger.warn(`${label} failed: ${error.stack || error.message}`);
     return fallback;
+  }
+}
+
+async function getBybitSymbols() {
+  const now = Date.now();
+
+  if (bybitSymbolCache && now - bybitSymbolCacheUpdatedAt < BYBIT_SYMBOL_CACHE_TTL_MS) {
+    return new Set(bybitSymbolCache);
+  }
+
+  try {
+    logger.info('Fetching Bybit linear symbols');
+    const response = await bybitClient.get('/v5/market/tickers', {
+      params: {
+        category: 'linear',
+      },
+    });
+    const rows = Array.isArray(response.data?.result?.list) ? response.data.result.list : [];
+    const symbols = new Set(
+      rows
+        .map((ticker) => ticker.symbol)
+        .filter((symbol) => typeof symbol === 'string' && symbol.endsWith('USDT'))
+    );
+
+    if (symbols.size === 0) {
+      throw new Error('Bybit symbol list is empty');
+    }
+
+    bybitSymbolCache = symbols;
+    bybitSymbolCacheUpdatedAt = now;
+    logger.info(`Fetched ${symbols.size} Bybit linear symbols`);
+
+    return new Set(bybitSymbolCache);
+  } catch (error) {
+    logger.error(`Bybit symbols fetch failed: ${error.stack || error.message}`);
+
+    if (bybitSymbolCache) {
+      return new Set(bybitSymbolCache);
+    }
+
+    throw error;
   }
 }
 
@@ -355,4 +407,5 @@ module.exports = {
   getOpenInterest,
   getFundingRate,
   getFullCoinData,
+  getBybitSymbols,
 };
