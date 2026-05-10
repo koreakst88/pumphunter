@@ -7,10 +7,8 @@ const BINANCE_MINI_TICKER_WS_URLS = [
   'wss://fstream.binancefuture.com/ws/!miniTicker@arr',
 ];
 const BINANCE_SYMBOL_WS_BASE_URL = 'wss://fstream.binancefuture.com/ws';
-const PRICE_HISTORY_WINDOW_MS = 60 * 60 * 1000;
 const lastSignalSentAt = new Map();
 const tickers = new Map();
-const priceHistory = new Map();
 
 let ws = null;
 let reconnectTimer = null;
@@ -45,18 +43,19 @@ function normalizeMiniTicker(ticker) {
   const baseVolume = Number(ticker.v);
   const quoteVolume = Number(ticker.q);
   const openPrice = Number(ticker.o);
-  const streamChange1h = Number(ticker.P);
-  const streamChange24h = Number(ticker.p);
 
-  if (!symbol || !symbol.endsWith('USDT') || !Number.isFinite(price) || price <= 0) {
+  if (
+    !symbol
+    || !symbol.endsWith('USDT')
+    || !Number.isFinite(price)
+    || price <= 0
+    || !Number.isFinite(openPrice)
+    || openPrice <= 0
+  ) {
     return null;
   }
 
-  const change24h = Number.isFinite(streamChange24h)
-    ? streamChange24h
-    : Number.isFinite(openPrice) && openPrice > 0
-      ? ((price - openPrice) / openPrice) * 100
-      : 0;
+  const change1h = ((price - openPrice) / openPrice) * 100;
   const volume24h = Number.isFinite(quoteVolume) && quoteVolume > 0
     ? quoteVolume
     : Number.isFinite(baseVolume)
@@ -66,44 +65,11 @@ function normalizeMiniTicker(ticker) {
   return {
     symbol,
     price,
-    change1h: Number.isFinite(streamChange1h) ? streamChange1h : null,
-    change24h,
+    change1h,
+    change24h: change1h,
     volume24h,
     updatedAt: Date.now(),
   };
-}
-
-function recordPricePoint(ticker) {
-  const now = Date.now();
-  const history = priceHistory.get(ticker.symbol) || [];
-
-  history.push({
-    price: ticker.price,
-    timestamp: now,
-  });
-
-  while (history.length > 0 && now - history[0].timestamp > PRICE_HISTORY_WINDOW_MS) {
-    history.shift();
-  }
-
-  priceHistory.set(ticker.symbol, history);
-}
-
-function calculateCachedChange1h(symbol, currentPrice) {
-  const history = priceHistory.get(symbol.toUpperCase()) || [];
-
-  if (history.length === 0) {
-    return 0;
-  }
-
-  const first = history[0];
-  const lastPrice = Number.isFinite(currentPrice) ? currentPrice : history[history.length - 1].price;
-
-  if (!first.price || !Number.isFinite(first.price) || first.price <= 0 || !Number.isFinite(lastPrice)) {
-    return 0;
-  }
-
-  return ((lastPrice - first.price) / first.price) * 100;
 }
 
 function getEmptyVolumeStats() {
@@ -180,12 +146,7 @@ function connectTickerStream() {
         const ticker = normalizeMiniTicker(item);
 
         if (ticker) {
-          if (!Number.isFinite(ticker.change1h)) {
-            ticker.change1h = calculateCachedChange1h(ticker.symbol, ticker.price);
-          }
-
           tickers.set(ticker.symbol, ticker);
-          recordPricePoint(ticker);
         }
       }
 
