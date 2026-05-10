@@ -1,4 +1,4 @@
-const bybit = require('./bybit');
+const exchange = require('./exchange');
 const config = require('../config');
 const logger = require('../utils/logger');
 
@@ -28,7 +28,7 @@ async function scanMarket() {
   let topCoins = [];
 
   try {
-    topCoins = await bybit.getTopCoins();
+    topCoins = await exchange.getTopCoins();
   } catch (error) {
     logger.error(`Market scan failed while fetching top coins: ${error.message}`);
     return [];
@@ -45,7 +45,7 @@ async function scanMarket() {
 
   for (const coin of candidates) {
     try {
-      const coinData = await bybit.getFullCoinData(coin.symbol, coin);
+      const coinData = await exchange.getFullCoinData(coin.symbol);
 
       if (coinData.change1h >= config.SHORT_MIN_PUMP) {
         signalCandidates.push({

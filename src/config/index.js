@@ -7,11 +7,10 @@ module.exports = {
   TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN,
   TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-  SUPABASE_PROXY_URL: process.env.SUPABASE_PROXY_URL || null,
 
   // Exchange
-  EXCHANGE: 'bybit',
-  BYBIT_BASE_URL: process.env.BYBIT_BASE_URL || 'https://api.bytick.com',
+  EXCHANGE: 'binance',
+  BINANCE_BASE_URL: 'https://fapi.binance.com',
 
   // Coin filters
   MIN_VOLUME_24H: 30_000_000,

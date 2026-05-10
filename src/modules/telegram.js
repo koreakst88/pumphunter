@@ -1,7 +1,7 @@
 const { Markup, Telegraf } = require('telegraf');
 const config = require('../config');
 const logger = require('../utils/logger');
-const bybit = require('./bybit');
+const exchange = require('./exchange');
 const openai = require('./openai');
 const signals = require('./signals');
 const database = require('./database');
@@ -20,7 +20,7 @@ const TELEGRAM_COMMANDS = [
   { command: 'positions', description: 'Открытые позиции' },
   { command: 'stats', description: 'Статистика: /stats today или /stats week' },
   { command: 'settings', description: 'Настройки бота' },
-  { command: 'ping', description: 'Проверка Bybit API' },
+  { command: 'ping', description: 'Проверка Binance API' },
 ];
 
 function isQuietHours(date = new Date()) {
@@ -258,7 +258,7 @@ function getHelpMessage() {
     '/positions — список открытых позиций',
     '/stats [today|week] — статистика за день или неделю',
     '/settings — текущие настройки',
-    '/ping — проверить доступность Bybit API',
+    '/ping — проверить доступность Binance API',
     '',
     'Сканер работает автоматически каждые 5 минут.',
   ].join('\n');
@@ -268,7 +268,7 @@ function getStartMessage() {
   return [
     '🔴 PumpHunter запущен.',
     '',
-    'Я сканирую фьючерсы Bybit, ищу LONG/SHORT сигналы и умею анализировать открытую позицию через OpenAI.',
+    'Я сканирую фьючерсы Binance, ищу LONG/SHORT сигналы и умею анализировать открытую позицию через OpenAI.',
     '',
     'Напиши /help, чтобы увидеть доступные команды.',
   ].join('\n');
@@ -328,7 +328,7 @@ async function replyPositions(ctx) {
 
     for (const position of positions) {
       try {
-        const ticker = await bybit.getTicker(position.symbol);
+        const ticker = await exchange.getTicker(position.symbol);
         const pnlPercent = calculatePnlPercent(position.type, position.entry_price, ticker.price);
         const pnlUsd = calculatePnlUsd(position.type, position.entry_price, ticker.price, position.size_usd);
 
@@ -389,7 +389,7 @@ if (bot) {
     try {
       await ctx.reply(`Собираю рыночные данные для ${args.symbol}...`);
 
-      const marketData = await bybit.getFullCoinData(args.symbol);
+      const marketData = await exchange.getFullCoinData(args.symbol);
       const pnlPercent = calculatePnlPercent(args.type, args.entryPrice, marketData.price);
       const volumeTrend = getVolumeTrend(marketData);
       const positionData = {
@@ -441,7 +441,7 @@ if (bot) {
 
     try {
       logger.info(`Ручной скан: ${symbol}`);
-      const marketData = await bybit.getFullCoinData(symbol);
+      const marketData = await exchange.getFullCoinData(symbol);
       logger.info(`Результат ручного скана ${symbol}: ${JSON.stringify(marketData)}`);
       const signalType = getSignalType(marketData);
 
@@ -464,13 +464,13 @@ if (bot) {
 
   bot.command('ping', async (ctx) => {
     try {
-      const result = await bybit.testConnection();
+      const result = await exchange.testConnection();
 
       if (result.ok) {
-        return ctx.reply(`✅ Bybit API работает. BTC: ${formatPrice(result.price)}`);
+        return ctx.reply(`✅ Binance API работает. BTC: ${formatPrice(result.price)}`);
       }
 
-      return ctx.reply(`❌ Bybit API недоступен: ${result.error}`);
+      return ctx.reply(`❌ Binance API недоступен: ${result.error}`);
     } catch (error) {
       logger.error(`/ping failed: ${error.stack || error.message}`);
       return ctx.reply(COMMAND_ERROR_MESSAGE);
@@ -526,7 +526,7 @@ if (bot) {
       let closePrice = args.closePrice;
 
       if (!closePrice) {
-        const ticker = await bybit.getTicker(args.symbol);
+        const ticker = await exchange.getTicker(args.symbol);
         closePrice = ticker.price;
       }
 
