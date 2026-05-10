@@ -254,7 +254,7 @@ function getHelpMessage() {
     '/settings — текущие настройки',
     '/ping — проверить WebSocket сканер',
     '',
-    'Сканер работает автоматически каждые 5 минут.',
+    'Сканер работает автоматически каждую минуту.',
   ].join('\n');
 }
 
@@ -446,6 +446,10 @@ if (bot) {
 
       if (!scanner.isTradableOnBybit(symbol)) {
         return ctx.reply(`${buildScanSummary(symbol, marketData)}\n\n❌ Монеты нет на Bybit linear, сигнал не отправляется.`);
+      }
+
+      if (scanner.isNewListing(symbol)) {
+        return ctx.reply(`${buildScanSummary(symbol, marketData)}\n\n⚠️ Новый листинг — торговля опасна`);
       }
 
       const signalType = scanner.getSignalType(marketData);

@@ -15,10 +15,21 @@ const bybitClient = axios.create({
   },
 });
 const BYBIT_SYMBOL_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const NEW_LISTING_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let bybitSymbolCache = null;
 let bybitSymbolCacheUpdatedAt = 0;
+
+function normalizeLaunchTime(value) {
+  const launchTime = Number(value || 0);
+
+  if (!Number.isFinite(launchTime) || launchTime <= 0) {
+    return 0;
+  }
+
+  return launchTime < 1_000_000_000_000 ? launchTime * 1000 : launchTime;
+}
 
 function buildProxyUrl(path, params = {}) {
   const queryString = new URLSearchParams(params).toString();
@@ -166,11 +177,38 @@ async function safeRequest(label, fallback, handler) {
   }
 }
 
+async function fetchBybitLaunchTimes() {
+  const launchTimes = new Map();
+  let cursor = '';
+
+  do {
+    const response = await bybitClient.get('/v5/market/instruments-info', {
+      params: {
+        category: 'linear',
+        limit: 1000,
+        cursor: cursor || undefined,
+      },
+    });
+    const result = response.data?.result || {};
+    const rows = Array.isArray(result.list) ? result.list : [];
+
+    for (const instrument of rows) {
+      if (typeof instrument.symbol === 'string' && instrument.symbol.endsWith('USDT')) {
+        launchTimes.set(instrument.symbol, normalizeLaunchTime(instrument.launchTime));
+      }
+    }
+
+    cursor = result.nextPageCursor || '';
+  } while (cursor);
+
+  return launchTimes;
+}
+
 async function getBybitSymbols() {
   const now = Date.now();
 
   if (bybitSymbolCache && now - bybitSymbolCacheUpdatedAt < BYBIT_SYMBOL_CACHE_TTL_MS) {
-    return new Set(bybitSymbolCache);
+    return new Map(bybitSymbolCache);
   }
 
   try {
@@ -181,11 +219,21 @@ async function getBybitSymbols() {
       },
     });
     const rows = Array.isArray(response.data?.result?.list) ? response.data.result.list : [];
-    const symbols = new Set(
-      rows
-        .map((ticker) => ticker.symbol)
-        .filter((symbol) => typeof symbol === 'string' && symbol.endsWith('USDT'))
-    );
+    const symbols = new Map();
+
+    for (const ticker of rows) {
+      if (typeof ticker.symbol === 'string' && ticker.symbol.endsWith('USDT')) {
+        symbols.set(ticker.symbol, normalizeLaunchTime(ticker.launchTime));
+      }
+    }
+
+    const launchTimes = await fetchBybitLaunchTimes();
+
+    for (const [symbol, launchTime] of launchTimes.entries()) {
+      if (symbols.has(symbol) || launchTime > 0) {
+        symbols.set(symbol, launchTime);
+      }
+    }
 
     if (symbols.size === 0) {
       throw new Error('Bybit symbol list is empty');
@@ -195,16 +243,31 @@ async function getBybitSymbols() {
     bybitSymbolCacheUpdatedAt = now;
     logger.info(`Fetched ${symbols.size} Bybit linear symbols`);
 
-    return new Set(bybitSymbolCache);
+    return new Map(bybitSymbolCache);
   } catch (error) {
     logger.error(`Bybit symbols fetch failed: ${error.stack || error.message}`);
 
     if (bybitSymbolCache) {
-      return new Set(bybitSymbolCache);
+      return new Map(bybitSymbolCache);
     }
 
     throw error;
   }
+}
+
+function isNewListing(symbol) {
+  if (!symbol || !bybitSymbolCache) {
+    return false;
+  }
+
+  const launchTime = bybitSymbolCache.get(symbol.toUpperCase());
+
+  if (!Number.isFinite(launchTime) || launchTime <= 0) {
+    return false;
+  }
+
+  const age = Date.now() - launchTime;
+  return age >= 0 && age < NEW_LISTING_WINDOW_MS;
 }
 
 async function getTopCoins() {
@@ -408,4 +471,5 @@ module.exports = {
   getFundingRate,
   getFullCoinData,
   getBybitSymbols,
+  isNewListing,
 };
