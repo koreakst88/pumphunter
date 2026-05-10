@@ -1,4 +1,3 @@
-const cron = require('node-cron');
 const logger = require('./utils/logger');
 const config = require('./config');
 const scanner = require('./modules/scanner');
@@ -9,7 +8,6 @@ const risk = require('./modules/risk');
 const exchange = require('./modules/exchange');
 
 let isScanning = false;
-let cronTask = null;
 let lastDailyStopNotificationDate = null;
 
 function buildStartupMessage() {
@@ -88,10 +86,7 @@ async function runScan() {
 async function shutdown(signal) {
   logger.info(`Received ${signal}, shutting down`);
 
-  if (cronTask) {
-    cronTask.stop();
-  }
-
+  scanner.stopTickerStream();
   database.saveDb();
   telegram.stopBot(signal);
   process.exit(0);
@@ -105,12 +100,9 @@ async function main() {
   await telegram.startBot();
   await telegram.sendNotification(buildStartupMessage());
 
-  const schedule = `*/${config.SCAN_INTERVAL_MINUTES} * * * *`;
-  cronTask = cron.schedule(schedule, runScan);
+  scanner.startTickerStream(runScan);
 
-  logger.info(`PumpHunter scanner started. Schedule: every ${config.SCAN_INTERVAL_MINUTES} minutes`);
-
-  await runScan();
+  logger.info(`PumpHunter WebSocket scanner started. Signal check: every ${config.SCAN_INTERVAL_MINUTES} minutes`);
 }
 
 process.once('SIGINT', shutdown);
