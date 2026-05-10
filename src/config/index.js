@@ -7,6 +7,7 @@ module.exports = {
   TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN,
   TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+  CLOUDFLARE_PROXY_URL: process.env.CLOUDFLARE_PROXY_URL || null,
 
   // Exchange
   EXCHANGE: 'binance',

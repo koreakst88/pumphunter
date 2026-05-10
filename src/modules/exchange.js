@@ -9,16 +9,24 @@ const client = axios.create({
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function buildProxyUrl(path, params = {}) {
+  const queryString = new URLSearchParams(params).toString();
+  return `${config.CLOUDFLARE_PROXY_URL}?path=${path}&params=${encodeURIComponent(queryString)}`;
+}
+
 async function request(path, params = {}) {
   await sleep(config.RATE_LIMIT_DELAY_MS);
 
   try {
-    const response = await client.get(path, { params });
+    const response = config.CLOUDFLARE_PROXY_URL
+      ? await axios.get(buildProxyUrl(path, params), { timeout: 10_000 })
+      : await client.get(path, { params });
     return response.data;
   } catch (error) {
     const status = error.response?.status;
     const data = error.response?.data ? JSON.stringify(error.response.data) : '';
-    logger.error(`Binance request failed for ${path}: status=${status || 'n/a'} ${error.message} ${data}`);
+    const transport = config.CLOUDFLARE_PROXY_URL ? 'Cloudflare proxy' : 'Binance direct';
+    logger.error(`${transport} request failed for ${path}: status=${status || 'n/a'} ${error.message} ${data}`);
     throw error;
   }
 }
