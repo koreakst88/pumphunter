@@ -6,7 +6,9 @@ const signals = require('./modules/signals');
 const telegram = require('./modules/telegram');
 const database = require('./modules/database');
 const risk = require('./modules/risk');
+const bybit = require('./modules/bybit');
 
+const startTime = Date.now();
 let isScanning = false;
 let cronTask = null;
 let lastDailyStopNotificationDate = null;
@@ -91,6 +93,11 @@ async function shutdown(signal) {
     cronTask.stop();
   }
 
+  if (Date.now() - startTime < 10_000) {
+    logger.info('Process lifetime is under 10 seconds, skipping shutdown notification');
+    process.exit(0);
+  }
+
   database.saveDb();
   await telegram.sendNotification('⛔ PumpHunter остановлен');
   telegram.stopBot(signal);
@@ -99,6 +106,9 @@ async function shutdown(signal) {
 
 async function main() {
   await database.initDatabase();
+  const bybitConnection = await bybit.testConnection();
+  logger.info(`Bybit startup test result: ${JSON.stringify(bybitConnection)}`);
+
   await telegram.startBot();
   await telegram.sendNotification(buildStartupMessage());
 

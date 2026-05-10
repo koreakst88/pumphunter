@@ -20,6 +20,7 @@ const TELEGRAM_COMMANDS = [
   { command: 'positions', description: 'Открытые позиции' },
   { command: 'stats', description: 'Статистика: /stats today или /stats week' },
   { command: 'settings', description: 'Настройки бота' },
+  { command: 'ping', description: 'Проверка Bybit API' },
 ];
 
 function isQuietHours(date = new Date()) {
@@ -257,6 +258,7 @@ function getHelpMessage() {
     '/positions — список открытых позиций',
     '/stats [today|week] — статистика за день или неделю',
     '/settings — текущие настройки',
+    '/ping — проверить доступность Bybit API',
     '',
     'Сканер работает автоматически каждые 5 минут.',
   ].join('\n');
@@ -456,6 +458,21 @@ if (bot) {
       return ctx.reply(buildScanSummary(symbol, marketData));
     } catch (error) {
       logger.error(`/scan failed for ${symbol}: ${error.stack || error.message}`);
+      return ctx.reply(COMMAND_ERROR_MESSAGE);
+    }
+  });
+
+  bot.command('ping', async (ctx) => {
+    try {
+      const result = await bybit.testConnection();
+
+      if (result.ok) {
+        return ctx.reply(`✅ Bybit API работает. BTC: ${formatPrice(result.price)}`);
+      }
+
+      return ctx.reply(`❌ Bybit API недоступен: ${result.error}`);
+    } catch (error) {
+      logger.error(`/ping failed: ${error.stack || error.message}`);
       return ctx.reply(COMMAND_ERROR_MESSAGE);
     }
   });

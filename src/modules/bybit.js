@@ -35,6 +35,59 @@ async function request(path, params = {}) {
   }
 }
 
+async function testConnection() {
+  try {
+    const response = await client.get('/v5/market/tickers', {
+      params: {
+        category: 'linear',
+        symbol: 'BTCUSDT',
+      },
+    });
+
+    logger.info(`Bybit testConnection response: ${JSON.stringify({
+      status: response.status,
+      data: response.data,
+    })}`);
+
+    const ticker = response.data?.result?.list?.[0];
+    const price = Number(ticker?.lastPrice);
+
+    if (response.data?.retCode !== 0) {
+      return {
+        ok: false,
+        price: 0,
+        error: `retCode=${response.data?.retCode}: ${response.data?.retMsg || 'Unknown Bybit error'}`,
+      };
+    }
+
+    if (!Number.isFinite(price) || price <= 0) {
+      return {
+        ok: false,
+        price: 0,
+        error: 'BTCUSDT price missing in Bybit response',
+      };
+    }
+
+    return {
+      ok: true,
+      price,
+      error: '',
+    };
+  } catch (error) {
+    const message = error.response?.data
+      ? JSON.stringify(error.response.data)
+      : error.message;
+
+    logger.error(`Bybit testConnection failed: ${error.stack || error.message}`);
+
+    return {
+      ok: false,
+      price: 0,
+      error: message,
+    };
+  }
+}
+
 function normalizeTicker(ticker) {
   const lastPrice = Number(ticker.lastPrice);
   const prevPrice24h = Number(ticker.prevPrice24h);
@@ -324,6 +377,7 @@ async function getFullCoinData(symbol, tickerData = null) {
 }
 
 module.exports = {
+  testConnection,
   getTopCoins,
   getTicker,
   getKlines,
