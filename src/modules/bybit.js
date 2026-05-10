@@ -9,11 +9,18 @@ const client = axios.create({
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function request(path, params = {}) {
+function buildProxyUrl(path, params = {}) {
+  const queryString = new URLSearchParams(params).toString();
+  return `${config.SUPABASE_PROXY_URL}?path=${path}&params=${encodeURIComponent(queryString)}`;
+}
+
+async function makeRequest(path, params = {}) {
   await sleep(config.RATE_LIMIT_DELAY_MS);
 
   try {
-    const response = await client.get(path, { params });
+    const response = config.SUPABASE_PROXY_URL
+      ? await axios.get(buildProxyUrl(path, params), { timeout: 10_000 })
+      : await client.get(path, { params });
     const data = response.data;
 
     if (data.retCode !== 0) {
@@ -24,25 +31,32 @@ async function request(path, params = {}) {
   } catch (error) {
     const status = error.response?.status;
     const message = error.response?.data?.retMsg || error.message;
+    const transport = config.SUPABASE_PROXY_URL ? 'Supabase proxy' : 'Bybit direct';
 
     if (status === 429 || /rate limit/i.test(message)) {
-      logger.warn(`Bybit rate limit hit for ${path}: ${message}`);
+      logger.warn(`${transport} rate limit hit for ${path}: ${message}`);
     } else {
-      logger.error(`Bybit request failed for ${path}: ${message}`);
+      logger.error(`${transport} request failed for ${path}: ${message}`);
     }
 
     throw error;
   }
 }
 
+async function request(path, params = {}) {
+  return makeRequest(path, params);
+}
+
 async function testConnection() {
   try {
-    const response = await client.get('/v5/market/tickers', {
-      params: {
-        category: 'linear',
-        symbol: 'BTCUSDT',
-      },
-    });
+    const path = '/v5/market/tickers';
+    const params = {
+      category: 'linear',
+      symbol: 'BTCUSDT',
+    };
+    const response = config.SUPABASE_PROXY_URL
+      ? await axios.get(buildProxyUrl(path, params), { timeout: 10_000 })
+      : await client.get(path, { params });
 
     logger.info(`Bybit testConnection response: ${JSON.stringify({
       status: response.status,
@@ -378,6 +392,7 @@ async function getFullCoinData(symbol, tickerData = null) {
 
 module.exports = {
   testConnection,
+  makeRequest,
   getTopCoins,
   getTicker,
   getKlines,
