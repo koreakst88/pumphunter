@@ -7,8 +7,15 @@ const BINANCE_MINI_TICKER_WS_URLS = [
   'wss://fstream.binancefuture.com/ws/!miniTicker@arr',
 ];
 const BINANCE_SYMBOL_WS_BASE_URL = 'wss://fstream.binancefuture.com/ws';
+const PRICE_HISTORY_RETENTION_MS = 70 * 60 * 1000;
+const CHANGE_1H_TARGET_MS = 60 * 60 * 1000;
+const CHANGE_1H_MIN_AGE_MS = 55 * 60 * 1000;
+const CHANGE_1H_MAX_AGE_MS = 65 * 60 * 1000;
+const WARMUP_MS = 65 * 60 * 1000;
 const lastSignalSentAt = new Map();
 const tickers = new Map();
+const priceHistory = new Map();
+const startTime = Date.now();
 
 let ws = null;
 let reconnectTimer = null;
@@ -42,20 +49,16 @@ function normalizeMiniTicker(ticker) {
   const price = Number(ticker.c);
   const baseVolume = Number(ticker.v);
   const quoteVolume = Number(ticker.q);
-  const openPrice = Number(ticker.o);
 
   if (
     !symbol
     || !symbol.endsWith('USDT')
     || !Number.isFinite(price)
     || price <= 0
-    || !Number.isFinite(openPrice)
-    || openPrice <= 0
   ) {
     return null;
   }
 
-  const change1h = ((price - openPrice) / openPrice) * 100;
   const volume24h = Number.isFinite(quoteVolume) && quoteVolume > 0
     ? quoteVolume
     : Number.isFinite(baseVolume)
@@ -65,11 +68,61 @@ function normalizeMiniTicker(ticker) {
   return {
     symbol,
     price,
-    change1h,
-    change24h: change1h,
     volume24h,
     updatedAt: Date.now(),
   };
+}
+
+function recordPricePoint(symbol, price, timestamp = Date.now()) {
+  const history = priceHistory.get(symbol) || [];
+  const cutoff = timestamp - PRICE_HISTORY_RETENTION_MS;
+
+  history.push({ price, timestamp });
+  priceHistory.set(symbol, history.filter((point) => point.timestamp > cutoff));
+}
+
+function getRealChange1h(symbol) {
+  const normalizedSymbol = symbol.toUpperCase();
+  const ticker = tickers.get(normalizedSymbol);
+  const history = priceHistory.get(normalizedSymbol) || [];
+
+  if (!ticker || history.length === 0) {
+    return null;
+  }
+
+  const now = Date.now();
+  const targetTimestamp = now - CHANGE_1H_TARGET_MS;
+  let bestPoint = null;
+  let bestDistance = Infinity;
+
+  for (const point of history) {
+    const age = now - point.timestamp;
+
+    if (age < CHANGE_1H_MIN_AGE_MS || age > CHANGE_1H_MAX_AGE_MS) {
+      continue;
+    }
+
+    const distance = Math.abs(point.timestamp - targetTimestamp);
+
+    if (distance < bestDistance) {
+      bestPoint = point;
+      bestDistance = distance;
+    }
+  }
+
+  if (!bestPoint || !Number.isFinite(bestPoint.price) || bestPoint.price <= 0) {
+    return null;
+  }
+
+  return ((ticker.price - bestPoint.price) / bestPoint.price) * 100;
+}
+
+function isWarmingUp() {
+  return Date.now() - startTime < WARMUP_MS;
+}
+
+function getWarmupRemainingMs() {
+  return Math.max(0, WARMUP_MS - (Date.now() - startTime));
 }
 
 function getEmptyVolumeStats() {
@@ -147,6 +200,7 @@ function connectTickerStream() {
 
         if (ticker) {
           tickers.set(ticker.symbol, ticker);
+          recordPricePoint(ticker.symbol, ticker.price, ticker.updatedAt);
         }
       }
 
@@ -366,6 +420,12 @@ async function getFullCoinDataWS(symbol) {
     throw new Error(`Ticker cache is empty for ${normalizedSymbol}`);
   }
 
+  const change1h = getRealChange1h(normalizedSymbol);
+
+  if (change1h === null) {
+    throw new Error(`Not enough 1h price history for ${normalizedSymbol}`);
+  }
+
   const [openInterestData, fundingRate] = await Promise.all([
     subscribeOI(normalizedSymbol),
     subscribeFunding(normalizedSymbol),
@@ -375,8 +435,7 @@ async function getFullCoinDataWS(symbol) {
   return {
     symbol: normalizedSymbol,
     price: ticker.price,
-    change1h: ticker.change1h,
-    change24h: ticker.change24h,
+    change1h,
     volume24h: ticker.volume24h,
     openInterest: openInterestData.openInterest || 0,
     oiChange: openInterestData.oiChange || 0,
@@ -392,9 +451,19 @@ async function getFullCoinDataWS(symbol) {
 async function scanMarket() {
   logger.info(`Starting market scan from WebSocket cache, tickers=${tickers.size}`);
 
+  if (isWarmingUp()) {
+    const minutesLeft = Math.ceil(getWarmupRemainingMs() / 60_000);
+    logger.info(`Scanner warming up, ${minutesLeft} minutes until signals are enabled`);
+    return [];
+  }
+
   const candidates = Array.from(tickers.values())
+    .map((coin) => ({
+      ...coin,
+      change1h: getRealChange1h(coin.symbol),
+    }))
     .filter((coin) => Number.isFinite(coin.volume24h) && coin.volume24h >= config.MIN_VOLUME_24H)
-    .filter((coin) => Number.isFinite(coin.change1h) && coin.change1h >= config.LONG_MIN_PUMP)
+    .filter((coin) => coin.change1h !== null && coin.change1h >= config.LONG_MIN_PUMP)
     .filter((coin) => canSendSignal(coin.symbol))
     .sort((a, b) => b.volume24h - a.volume24h)
     .slice(0, config.TOP_COINS_COUNT);
@@ -442,6 +511,9 @@ module.exports = {
   getCachedPrice,
   getCacheSize,
   isConnected,
+  isWarmingUp,
+  getWarmupRemainingMs,
+  getRealChange1h,
   getSignalType,
   subscribeOI,
   subscribeFunding,

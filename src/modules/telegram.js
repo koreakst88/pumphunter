@@ -136,10 +136,6 @@ function buildScanSummary(symbol, marketData) {
     `Изменение 1ч: ${formatPercent(safeNumber(marketData.change1h))}`,
   ];
 
-  if (Number.isFinite(Number(marketData.change24h))) {
-    lines.push(`Изменение 24ч: ${formatPercent(safeNumber(marketData.change24h))}`);
-  }
-
   lines.push(
     `Объём 24ч: ${formatVolume(safeNumber(marketData.volume24h))}`,
     `Тренд объёма: ${getVolumeTrend(marketData)}`,
@@ -439,6 +435,12 @@ if (bot) {
 
     try {
       logger.info(`Ручной скан: ${symbol}`);
+
+      if (scanner.isWarmingUp()) {
+        const minutesLeft = Math.ceil(scanner.getWarmupRemainingMs() / 60_000);
+        return ctx.reply(`⏳ Идёт прогрев истории цен. До точного /scan осталось примерно ${minutesLeft} мин.`);
+      }
+
       const marketData = await scanner.getFullCoinDataWS(symbol);
       logger.info(`Результат ручного скана ${symbol}: ${JSON.stringify(marketData)}`);
       const signalType = scanner.getSignalType(marketData);
