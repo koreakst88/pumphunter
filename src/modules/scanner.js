@@ -1,6 +1,5 @@
 const WebSocket = require('ws');
 const config = require('../config');
-const exchange = require('./exchange');
 const logger = require('../utils/logger');
 
 const BINANCE_MINI_TICKER_WS_URLS = [
@@ -13,7 +12,6 @@ const CHANGE_1H_TARGET_MS = 60 * 60 * 1000;
 const CHANGE_1H_MIN_AGE_MS = 55 * 60 * 1000;
 const CHANGE_1H_MAX_AGE_MS = 65 * 60 * 1000;
 const WARMUP_MS = 65 * 60 * 1000;
-const BYBIT_SYMBOL_REFRESH_MS = 24 * 60 * 60 * 1000;
 const lastSignalSentAt = new Map();
 const tickers = new Map();
 const priceHistory = new Map();
@@ -27,8 +25,6 @@ let wsEndpointIndex = 0;
 let reconnectAttempts = 0;
 let scanHandler = null;
 let oiStreamUnavailable = false;
-let bybitSymbols = new Map();
-let bybitRefreshTimer = null;
 
 function getSignalCooldownMs() {
   return config.SIGNAL_COOLDOWN_HOURS * 60 * 60 * 1000;
@@ -46,38 +42,6 @@ function canSendSignal(symbol) {
 
 function markSignalSent(symbol) {
   lastSignalSentAt.set(symbol, Date.now());
-}
-
-async function refreshBybitSymbols() {
-  try {
-    bybitSymbols = await exchange.getBybitSymbols();
-    logger.info(`Bybit symbol cache updated: ${bybitSymbols.size} symbols`);
-  } catch (error) {
-    logger.error(`Bybit symbol cache update failed: ${error.message}`);
-  }
-}
-
-function isTradableOnBybit(symbol) {
-  if (!symbol || bybitSymbols.size === 0) {
-    return false;
-  }
-
-  return bybitSymbols.has(symbol.toUpperCase());
-}
-
-function isNewListing(symbol) {
-  if (!symbol || bybitSymbols.size === 0) {
-    return false;
-  }
-
-  const launchTime = bybitSymbols.get(symbol.toUpperCase());
-
-  if (!Number.isFinite(launchTime) || launchTime <= 0) {
-    return false;
-  }
-
-  const age = Date.now() - launchTime;
-  return age >= 0 && age < 14 * 24 * 60 * 60 * 1000;
 }
 
 function normalizeMiniTicker(ticker) {
@@ -263,11 +227,6 @@ function connectTickerStream() {
 function startTickerStream(onScan) {
   scanHandler = onScan;
   connectTickerStream();
-  refreshBybitSymbols();
-
-  if (!bybitRefreshTimer) {
-    bybitRefreshTimer = setInterval(refreshBybitSymbols, BYBIT_SYMBOL_REFRESH_MS);
-  }
 
   if (!scanTimer) {
     scanTimer = setInterval(() => {
@@ -290,11 +249,6 @@ function stopTickerStream() {
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
-  }
-
-  if (bybitRefreshTimer) {
-    clearInterval(bybitRefreshTimer);
-    bybitRefreshTimer = null;
   }
 
   clearFirstMessageTimer();
@@ -327,10 +281,6 @@ function getCacheSize() {
   return tickers.size;
 }
 
-function getBybitSymbolCacheSize() {
-  return bybitSymbols.size;
-}
-
 function isConnected() {
   return Boolean(ws && ws.readyState === WebSocket.OPEN);
 }
@@ -344,14 +294,6 @@ function getSignalType(coinData) {
   }
 
   if (coinData.volume24h < config.MIN_VOLUME_24H) {
-    return null;
-  }
-
-  if (!isTradableOnBybit(coinData.symbol)) {
-    return null;
-  }
-
-  if (isNewListing(coinData.symbol)) {
     return null;
   }
 
@@ -515,25 +457,11 @@ async function scanMarket() {
     return [];
   }
 
-  if (bybitSymbols.size === 0) {
-    logger.warn('Bybit symbol cache is empty, skipping signal scan');
-    return [];
-  }
-
   const candidates = Array.from(tickers.values())
     .map((coin) => ({
       ...coin,
       change1h: getRealChange1h(coin.symbol),
     }))
-    .filter((coin) => isTradableOnBybit(coin.symbol))
-    .filter((coin) => {
-      if (isNewListing(coin.symbol)) {
-        logger.warn(`Пропущен новый листинг: ${coin.symbol}`);
-        return false;
-      }
-
-      return true;
-    })
     .filter((coin) => Number.isFinite(coin.volume24h) && coin.volume24h >= config.MIN_VOLUME_24H)
     .filter((coin) => coin.change1h !== null && coin.change1h >= config.LONG_MIN_PUMP)
     .filter((coin) => canSendSignal(coin.symbol))
@@ -583,9 +511,6 @@ module.exports = {
   getCachedPrice,
   getCacheSize,
   isConnected,
-  isTradableOnBybit,
-  isNewListing,
-  getBybitSymbolCacheSize,
   isWarmingUp,
   getWarmupRemainingMs,
   getRealChange1h,
