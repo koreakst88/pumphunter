@@ -1,15 +1,15 @@
 const config = require('../config');
 
 function getShortLevels(change1h) {
-  if (change1h >= 100) {
-    return config.SHORT_LEVELS.PUMP_100_PLUS;
+  if (change1h >= 50) {
+    return config.SHORT_LEVELS.PUMP_50_PLUS;
   }
 
-  if (change1h >= 70) {
-    return config.SHORT_LEVELS.PUMP_70_100;
+  if (change1h >= 30) {
+    return config.SHORT_LEVELS.PUMP_30_50;
   }
 
-  return config.SHORT_LEVELS.PUMP_50_70;
+  return config.SHORT_LEVELS.PUMP_15_30;
 }
 
 function roundPrice(value) {
@@ -62,7 +62,11 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
-function getStars(score) {
+function getStars(score, type) {
+  if (type === 'LONG') {
+    return score >= 2 ? '⭐⭐' : '⭐';
+  }
+
   if (score >= 4) {
     return '⭐⭐⭐';
   }
@@ -74,7 +78,11 @@ function getStars(score) {
   return '⭐';
 }
 
-function getQualityLabel(score) {
+function getQualityLabel(score, type) {
+  if (type === 'LONG') {
+    return score >= 2 ? 'СРЕДНЕЕ' : 'НИЗКОЕ';
+  }
+
   if (score >= 4) {
     return 'ВЫСОКОЕ';
   }
@@ -87,29 +95,36 @@ function getQualityLabel(score) {
 }
 
 function calculateQuality(type, coinData) {
-  const factors = [];
-  const volumeStats = coinData.volumeStats || {};
+  let score = 0;
 
   if (type === 'SHORT') {
-    factors.push(Boolean(volumeStats.isRecentVolumeFallingFromPeak));
-    factors.push(coinData.fundingRate > config.SHORT_FUNDING_THRESHOLD);
-    factors.push(coinData.oiChange <= 0);
-    factors.push(coinData.change1h > 70);
+    if (coinData.fundingRate > config.SHORT_FUNDING_THRESHOLD) {
+      score += 1;
+    }
+
+    if (coinData.change1h > 30) {
+      score += 1;
+    }
+
+    if (coinData.change1h > 50) {
+      score += 2;
+    }
   } else if (type === 'LONG') {
-    factors.push((volumeStats.currentToAverageMultiplier || 0) >= config.LONG_VOLUME_MULTIPLIER);
-    factors.push(coinData.oiChange > 5);
-    factors.push(coinData.fundingRate < config.LONG_FUNDING_MAX);
-    factors.push(coinData.change1h >= 15 && coinData.change1h <= 20);
+    if (coinData.fundingRate < config.LONG_FUNDING_MAX) {
+      score += 1;
+    }
+
+    if (coinData.change1h < 15) {
+      score += 1;
+    }
   } else {
     throw new Error(`Unknown signal type: ${type}`);
   }
 
-  const score = factors.filter(Boolean).length;
-
   return {
     score,
-    stars: getStars(score),
-    label: getQualityLabel(score),
+    stars: getStars(score, type),
+    label: getQualityLabel(score, type),
   };
 }
 
@@ -150,12 +165,12 @@ function generateShortSignal(coinData) {
         positionPercent: 25,
       },
       {
-        label: 'Вход 2 (цена +20%)',
+        label: 'Вход 2 (+20% выше)',
         price: roundPrice(entryPrice * 1.2),
         positionPercent: 25,
       },
       {
-        label: 'Вход 3 (цена +40%)',
+        label: 'Вход 3 (+40% выше)',
         price: roundPrice(entryPrice * 1.4),
         positionPercent: 50,
       },
@@ -204,29 +219,38 @@ function formatShortMessage(signal) {
   const symbol = escapeHtml(signal.symbol);
   const updatedAt = signal.createdAt.toISOString().slice(11, 19);
   const entries = signal.entries
-    .map((entry) => `${escapeHtml(entry.label)}: ${formatPrice(entry.price)} — ${entry.positionPercent}% позиции`)
+    .map((entry) => `${escapeHtml(entry.label)}: ${formatPrice(entry.price)} - ${entry.positionPercent}% позиции`)
     .join('\n');
+  const takeProfit15 = roundPrice(signal.price * 0.92);
+  const takeProfit30 = roundPrice(signal.price * 0.88);
+  const takeProfit50 = roundPrice(signal.price * 0.85);
+  const stopLoss15 = roundPrice(signal.price * 1.12);
+  const stopLoss30 = roundPrice(signal.price * 1.18);
+  const stopLoss50 = roundPrice(signal.price * 1.25);
 
   return [
-    `<b>🔴 ШОРТ СИГНАЛ: ${symbol}</b>`,
+    `🔴 ШОРТ СИГНАЛ: ${symbol}`,
+    `${signal.quality.stars} Качество: ${signal.quality.label}`,
     '',
-    `${signal.quality.stars} Качество сигнала: <b>${signal.quality.label}</b>`,
+    `📈 Импульс за 1ч: ${formatPercent(signal.change1h)}`,
+    `💰 Цена: ${formatPrice(signal.price)}`,
+    `📊 Объём 24ч: ${formatVolume(signal.volume24h)}`,
+    `💸 Funding: ${formatPercent(signal.fundingRate)}`,
     '',
-    '<b>📈 Движение:</b>',
-    `Рост за 1ч: ${formatPercent(signal.change1h)}`,
-    `Текущая цена: ${formatPrice(signal.price)}`,
-    '',
-    '<b>📊 Данные:</b>',
-    formatMarketData(signal),
-    '',
-    '<b>📍 Рекомендуемый план входа:</b>',
-    '',
+    '📍 План входа:',
     entries,
     '',
-    `🎯 Тейк профит: ${formatPrice(signal.takeProfit)} (-${signal.takePercent}% от входа 1)`,
-    `🛑 Стоп лосс: ${formatPrice(signal.stopLoss)} (+${signal.stopPercent}% от входа 1)`,
+    '🎯 Тейк профит:',
+    `  change1h 15-30%: -8% от входа = ${formatPrice(takeProfit15)}`,
+    `  change1h 30-50%: -12% от входа = ${formatPrice(takeProfit30)}`,
+    `  change1h 50%+:   -15% от входа = ${formatPrice(takeProfit50)}`,
     '',
-    `⏱ Обновлено: ${updatedAt} UTC`,
+    '🛑 Стоп лосс:',
+    `  change1h 15-30%: +12% от входа = ${formatPrice(stopLoss15)}`,
+    `  change1h 30-50%: +18% от входа = ${formatPrice(stopLoss30)}`,
+    `  change1h 50%+:   +25% от входа = ${formatPrice(stopLoss50)}`,
+    '',
+    `⏱ ${updatedAt} UTC`,
   ].join('\n');
 }
 
@@ -235,30 +259,23 @@ function formatLongMessage(signal) {
   const updatedAt = signal.createdAt.toISOString().slice(11, 19);
 
   return [
-    `<b>🟢 ЛОНГ СИГНАЛ: ${symbol}</b>`,
+    `🟢 ЛОНГ СИГНАЛ: ${symbol}`,
+    `${signal.quality.stars} Качество: ${signal.quality.label}`,
     '',
-    `${signal.quality.stars} Качество сигнала: <b>${signal.quality.label}</b>`,
+    `📈 Импульс за 1ч: ${formatPercent(signal.change1h)}`,
+    `💰 Цена: ${formatPrice(signal.price)}`,
+    `📊 Объём 24ч: ${formatVolume(signal.volume24h)}`,
+    `💸 Funding: ${formatPercent(signal.fundingRate)}`,
     '',
-    '<b>📈 Движение:</b>',
-    `Рост за 1ч: ${formatPercent(signal.change1h)}`,
-    `Текущая цена: ${formatPrice(signal.price)}`,
+    `📍 Вход: ${formatPrice(signal.entry)}`,
+    `🛑 Стоп: -${signal.stopPercent}% = ${formatPrice(signal.stopLoss)}`,
     '',
-    '<b>📊 Данные:</b>',
-    formatMarketData(signal),
-    '',
-    '<b>📍 Рекомендация:</b>',
-    '',
-    `Вход: ${formatPrice(signal.entry)} — 50% позиции`,
-    `Усреднение: ${formatPrice(signal.averageDown)} (-5%) — 50% позиции`,
-    '',
-    '<b>🎯 Тейки:</b>',
-    `TP1: ${formatPrice(signal.takeProfit1)} (+${signal.take1Percent}%) — закрыть 50%`,
-    `TP2: ${formatPrice(signal.takeProfit2)} (+${signal.take2Percent}%) — закрыть 30%`,
+    '🎯 Тейки:',
+    `TP1: +${signal.take1Percent}% = ${formatPrice(signal.takeProfit1)} - закрыть 50%`,
+    `TP2: +${signal.take2Percent}% = ${formatPrice(signal.takeProfit2)} - закрыть 30%`,
     'Остаток 20%: трейлинг стоп',
     '',
-    `🛑 Стоп лосс: ${formatPrice(signal.stopLoss)} (-${signal.stopPercent}%)`,
-    '',
-    `⏱ Обновлено: ${updatedAt} UTC`,
+    `⏱ ${updatedAt} UTC`,
   ].join('\n');
 }
 

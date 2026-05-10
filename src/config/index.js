@@ -19,21 +19,21 @@ module.exports = {
   EXCLUDED_PAIRS: [],
 
   // SHORT signal conditions
-  SHORT_MIN_PUMP: 50,
+  SHORT_MIN_PUMP: 15,
   SHORT_VOLUME_DECREASE_CANDLES: 3,
-  SHORT_FUNDING_THRESHOLD: 0.3,
+  SHORT_FUNDING_THRESHOLD: 0.1,
 
   // LONG signal conditions
-  LONG_MIN_PUMP: 15,
-  LONG_MAX_PUMP: 25,
+  LONG_MIN_PUMP: 10,
+  LONG_MAX_PUMP: 20,
   LONG_VOLUME_MULTIPLIER: 3,
   LONG_FUNDING_MAX: 0.1,
 
   // Take/stop levels
   SHORT_LEVELS: {
-    PUMP_50_70: { stop: 12, take: 8 },
-    PUMP_70_100: { stop: 18, take: 12 },
-    PUMP_100_PLUS: { stop: 25, take: 15 },
+    PUMP_15_30: { stop: 12, take: 8 },
+    PUMP_30_50: { stop: 18, take: 12 },
+    PUMP_50_PLUS: { stop: 25, take: 15 },
   },
 
   LONG_LEVELS: {

@@ -45,14 +45,15 @@ function normalizeMiniTicker(ticker) {
   const baseVolume = Number(ticker.v);
   const quoteVolume = Number(ticker.q);
   const openPrice = Number(ticker.o);
-  const explicitChange24h = Number(ticker.P ?? ticker.p);
+  const streamChange1h = Number(ticker.P);
+  const streamChange24h = Number(ticker.p);
 
   if (!symbol || !symbol.endsWith('USDT') || !Number.isFinite(price) || price <= 0) {
     return null;
   }
 
-  const change24h = Number.isFinite(explicitChange24h)
-    ? explicitChange24h
+  const change24h = Number.isFinite(streamChange24h)
+    ? streamChange24h
     : Number.isFinite(openPrice) && openPrice > 0
       ? ((price - openPrice) / openPrice) * 100
       : 0;
@@ -65,6 +66,7 @@ function normalizeMiniTicker(ticker) {
   return {
     symbol,
     price,
+    change1h: Number.isFinite(streamChange1h) ? streamChange1h : null,
     change24h,
     volume24h,
     updatedAt: Date.now(),
@@ -87,21 +89,21 @@ function recordPricePoint(ticker) {
   priceHistory.set(ticker.symbol, history);
 }
 
-function calculateCachedChange1h(symbol) {
+function calculateCachedChange1h(symbol, currentPrice) {
   const history = priceHistory.get(symbol.toUpperCase()) || [];
 
-  if (history.length < 2) {
+  if (history.length === 0) {
     return 0;
   }
 
   const first = history[0];
-  const last = history[history.length - 1];
+  const lastPrice = Number.isFinite(currentPrice) ? currentPrice : history[history.length - 1].price;
 
-  if (!first.price || !Number.isFinite(first.price) || first.price <= 0 || !Number.isFinite(last.price)) {
+  if (!first.price || !Number.isFinite(first.price) || first.price <= 0 || !Number.isFinite(lastPrice)) {
     return 0;
   }
 
-  return ((last.price - first.price) / first.price) * 100;
+  return ((lastPrice - first.price) / first.price) * 100;
 }
 
 function getEmptyVolumeStats() {
@@ -178,6 +180,10 @@ function connectTickerStream() {
         const ticker = normalizeMiniTicker(item);
 
         if (ticker) {
+          if (!Number.isFinite(ticker.change1h)) {
+            ticker.change1h = calculateCachedChange1h(ticker.symbol, ticker.price);
+          }
+
           tickers.set(ticker.symbol, ticker);
           recordPricePoint(ticker);
         }
@@ -262,6 +268,37 @@ function getCacheSize() {
 
 function isConnected() {
   return Boolean(ws && ws.readyState === WebSocket.OPEN);
+}
+
+function getSignalType(coinData) {
+  const change1h = Number(coinData.change1h);
+  const fundingRate = Number(coinData.fundingRate || 0);
+
+  if (!Number.isFinite(change1h) || !Number.isFinite(Number(coinData.volume24h))) {
+    return null;
+  }
+
+  if (coinData.volume24h < config.MIN_VOLUME_24H) {
+    return null;
+  }
+
+  if (change1h >= 20) {
+    return 'SHORT';
+  }
+
+  if (change1h >= config.SHORT_MIN_PUMP && fundingRate > config.SHORT_FUNDING_THRESHOLD) {
+    return 'SHORT';
+  }
+
+  if (change1h >= config.LONG_MIN_PUMP && change1h < config.LONG_MAX_PUMP) {
+    return 'LONG';
+  }
+
+  if (change1h >= config.SHORT_MIN_PUMP) {
+    return 'SHORT';
+  }
+
+  return null;
 }
 
 function readOneWebSocketMessage(url, timeoutMs) {
@@ -377,7 +414,7 @@ async function getFullCoinDataWS(symbol) {
   return {
     symbol: normalizedSymbol,
     price: ticker.price,
-    change1h: calculateCachedChange1h(normalizedSymbol),
+    change1h: ticker.change1h,
     change24h: ticker.change24h,
     volume24h: ticker.volume24h,
     openInterest: openInterestData.openInterest || 0,
@@ -396,20 +433,21 @@ async function scanMarket() {
 
   const candidates = Array.from(tickers.values())
     .filter((coin) => Number.isFinite(coin.volume24h) && coin.volume24h >= config.MIN_VOLUME_24H)
-    .filter((coin) => Number.isFinite(coin.change24h) && coin.change24h > 10)
+    .filter((coin) => Number.isFinite(coin.change1h) && coin.change1h >= config.LONG_MIN_PUMP)
     .filter((coin) => canSendSignal(coin.symbol))
     .sort((a, b) => b.volume24h - a.volume24h)
     .slice(0, config.TOP_COINS_COUNT);
 
-  logger.info(`Pre-filtered ${candidates.length} candidates from WebSocket cache with 24h change > 10%`);
+  logger.info(`Pre-filtered ${candidates.length} candidates from WebSocket cache with 1h change >= ${config.LONG_MIN_PUMP}%`);
 
   const signalCandidates = [];
 
   for (const coin of candidates) {
     try {
       const coinData = await getFullCoinDataWS(coin.symbol);
+      const signalType = getSignalType(coinData);
 
-      if (coinData.change1h >= config.SHORT_MIN_PUMP) {
+      if (signalType === 'SHORT') {
         signalCandidates.push({
           ...coinData,
           signalType: 'SHORT',
@@ -417,7 +455,7 @@ async function scanMarket() {
         continue;
       }
 
-      if (coinData.change1h >= config.LONG_MIN_PUMP && coinData.change1h < 30) {
+      if (signalType === 'LONG') {
         signalCandidates.push({
           ...coinData,
           signalType: 'LONG',
@@ -443,6 +481,7 @@ module.exports = {
   getCachedPrice,
   getCacheSize,
   isConnected,
+  getSignalType,
   subscribeOI,
   subscribeFunding,
   getFullCoinDataWS,

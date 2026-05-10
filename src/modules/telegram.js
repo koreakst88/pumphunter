@@ -102,18 +102,6 @@ function calculatePnlUsd(type, entryPrice, currentPrice, sizeUsd) {
   return sizeUsd * (calculatePnlPercent(type, entryPrice, currentPrice) / 100);
 }
 
-function getSignalType(marketData) {
-  if (marketData.change1h >= config.SHORT_MIN_PUMP) {
-    return 'SHORT';
-  }
-
-  if (marketData.change1h >= config.LONG_MIN_PUMP && marketData.change1h < 30) {
-    return 'LONG';
-  }
-
-  return null;
-}
-
 function safeNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
@@ -453,7 +441,7 @@ if (bot) {
       logger.info(`Ручной скан: ${symbol}`);
       const marketData = await scanner.getFullCoinDataWS(symbol);
       logger.info(`Результат ручного скана ${symbol}: ${JSON.stringify(marketData)}`);
-      const signalType = getSignalType(marketData);
+      const signalType = scanner.getSignalType(marketData);
 
       if (signalType === 'SHORT') {
         const signal = signals.generateShortSignal(marketData);
