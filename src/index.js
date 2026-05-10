@@ -5,7 +5,6 @@ const signals = require('./modules/signals');
 const telegram = require('./modules/telegram');
 const database = require('./modules/database');
 const risk = require('./modules/risk');
-const exchange = require('./modules/exchange');
 
 let isScanning = false;
 let lastDailyStopNotificationDate = null;
@@ -94,8 +93,6 @@ async function shutdown(signal) {
 
 async function main() {
   await database.initDatabase();
-  const exchangeConnection = await exchange.testConnection();
-  logger.info(`Exchange startup test result: ${JSON.stringify(exchangeConnection)}`);
 
   await telegram.startBot();
   await telegram.sendNotification(buildStartupMessage());

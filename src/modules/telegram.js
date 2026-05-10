@@ -6,6 +6,7 @@ const openai = require('./openai');
 const signals = require('./signals');
 const database = require('./database');
 const risk = require('./risk');
+const scanner = require('./scanner');
 
 const bot = config.TELEGRAM_BOT_TOKEN ? new Telegraf(config.TELEGRAM_BOT_TOKEN) : null;
 const COMMAND_ERROR_MESSAGE = '❌ Ошибка при выполнении команды';
@@ -20,7 +21,7 @@ const TELEGRAM_COMMANDS = [
   { command: 'positions', description: 'Открытые позиции' },
   { command: 'stats', description: 'Статистика: /stats today или /stats week' },
   { command: 'settings', description: 'Настройки бота' },
-  { command: 'ping', description: 'Проверка Binance API' },
+  { command: 'ping', description: 'Проверка WebSocket сканера' },
 ];
 
 function isQuietHours(date = new Date()) {
@@ -155,6 +156,21 @@ function buildScanSummary(symbol, marketData) {
   ].join('\n');
 }
 
+function buildCachedScanSummary(symbol, ticker) {
+  return [
+    `📋 СКАН: ${symbol} (данные из кэша)`,
+    '',
+    `Цена: ${formatPrice(safeNumber(ticker.price))}`,
+    `Изменение 24ч: ${formatPercent(safeNumber(ticker.change24h))}`,
+    `Объём 24ч: ${formatVolume(safeNumber(ticker.volume24h))}`,
+    `Монет в кэше: ${scanner.getCacheSize()}`,
+    '',
+    'OI и Funding пропущены: REST недоступен.',
+    '',
+    '❌ Условия для полного сигнала не проверены.',
+  ].join('\n');
+}
+
 function parseAnalyzeArgs(text) {
   const [, symbol, type, entryPriceRaw] = text.trim().split(/\s+/);
   const normalizedType = type ? type.toUpperCase() : null;
@@ -258,7 +274,7 @@ function getHelpMessage() {
     '/positions — список открытых позиций',
     '/stats [today|week] — статистика за день или неделю',
     '/settings — текущие настройки',
-    '/ping — проверить доступность Binance API',
+    '/ping — проверить WebSocket сканер',
     '',
     'Сканер работает автоматически каждые 5 минут.',
   ].join('\n');
@@ -441,8 +457,15 @@ if (bot) {
 
     try {
       logger.info(`Ручной скан: ${symbol}`);
+      const cachedTicker = scanner.getCachedTicker(symbol);
       const marketData = await exchange.getFullCoinData(symbol);
       logger.info(`Результат ручного скана ${symbol}: ${JSON.stringify(marketData)}`);
+
+      if (safeNumber(marketData.price) <= 0 && cachedTicker) {
+        logger.warn(`REST scan for ${symbol} returned incomplete data, using WebSocket cache`);
+        return ctx.reply(buildCachedScanSummary(symbol, cachedTicker));
+      }
+
       const signalType = getSignalType(marketData);
 
       if (signalType === 'SHORT') {
@@ -458,19 +481,26 @@ if (bot) {
       return ctx.reply(buildScanSummary(symbol, marketData));
     } catch (error) {
       logger.error(`/scan failed for ${symbol}: ${error.stack || error.message}`);
-      return ctx.reply(COMMAND_ERROR_MESSAGE);
+      const cachedTicker = scanner.getCachedTicker(symbol);
+
+      if (cachedTicker) {
+        return ctx.reply(buildCachedScanSummary(symbol, cachedTicker));
+      }
+
+      return ctx.reply('⏳ Кэш заполняется, подожди 30 секунд');
     }
   });
 
   bot.command('ping', async (ctx) => {
     try {
-      const result = await exchange.testConnection();
+      const price = scanner.getCachedPrice('BTCUSDT');
+      const cacheSize = scanner.getCacheSize();
 
-      if (result.ok) {
-        return ctx.reply(`✅ Binance API работает. BTC: ${formatPrice(result.price)}`);
+      if (!price) {
+        return ctx.reply('⏳ Кэш заполняется, подожди 30 секунд');
       }
 
-      return ctx.reply(`❌ Binance API недоступен: ${result.error}`);
+      return ctx.reply(`✅ Сканер работает. BTC: ${formatPrice(price)} (из WebSocket кэша, ${cacheSize} монет)`);
     } catch (error) {
       logger.error(`/ping failed: ${error.stack || error.message}`);
       return ctx.reply(COMMAND_ERROR_MESSAGE);

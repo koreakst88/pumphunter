@@ -192,6 +192,29 @@ function stopTickerStream() {
   logger.info('Binance miniTicker WebSocket stopped');
 }
 
+function getCachedTicker(symbol) {
+  if (!symbol) {
+    return null;
+  }
+
+  const ticker = tickers.get(symbol.toUpperCase());
+
+  return ticker ? { ...ticker } : null;
+}
+
+function getCachedPrice(symbol) {
+  const ticker = getCachedTicker(symbol);
+  return ticker ? ticker.price : null;
+}
+
+function getCacheSize() {
+  return tickers.size;
+}
+
+function isConnected() {
+  return Boolean(ws && ws.readyState === WebSocket.OPEN);
+}
+
 async function scanMarket() {
   logger.info(`Starting market scan from WebSocket cache, tickers=${tickers.size}`);
 
@@ -240,4 +263,8 @@ module.exports = {
   scanMarket,
   canSendSignal,
   markSignalSent,
+  getCachedTicker,
+  getCachedPrice,
+  getCacheSize,
+  isConnected,
 };
