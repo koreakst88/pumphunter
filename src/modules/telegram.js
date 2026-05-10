@@ -141,34 +141,28 @@ function buildAnalysisMessage(symbol, type, entryPrice, marketData, pnlPercent, 
 }
 
 function buildScanSummary(symbol, marketData) {
-  return [
+  const lines = [
     `📋 СКАН: ${symbol}`,
     '',
     `Цена: ${formatPrice(safeNumber(marketData.price))}`,
     `Изменение 1ч: ${formatPercent(safeNumber(marketData.change1h))}`,
+  ];
+
+  if (Number.isFinite(Number(marketData.change24h))) {
+    lines.push(`Изменение 24ч: ${formatPercent(safeNumber(marketData.change24h))}`);
+  }
+
+  lines.push(
     `Объём 24ч: ${formatVolume(safeNumber(marketData.volume24h))}`,
     `Тренд объёма: ${getVolumeTrend(marketData)}`,
     `OI изменение: ${formatPercent(safeNumber(marketData.oiChange))}`,
     `OI тренд: ${marketData.oiTrend || 'нет данных'}`,
     `Funding: ${formatPercent(safeNumber(marketData.fundingRate))}`,
     '',
-    '❌ Условия для сигнала не выполнены.',
-  ].join('\n');
-}
+    '❌ Условия для сигнала не выполнены.'
+  );
 
-function buildCachedScanSummary(symbol, ticker) {
-  return [
-    `📋 СКАН: ${symbol} (данные из кэша)`,
-    '',
-    `Цена: ${formatPrice(safeNumber(ticker.price))}`,
-    `Изменение 24ч: ${formatPercent(safeNumber(ticker.change24h))}`,
-    `Объём 24ч: ${formatVolume(safeNumber(ticker.volume24h))}`,
-    `Монет в кэше: ${scanner.getCacheSize()}`,
-    '',
-    'OI и Funding пропущены: REST недоступен.',
-    '',
-    '❌ Условия для полного сигнала не проверены.',
-  ].join('\n');
+  return lines.join('\n');
 }
 
 function parseAnalyzeArgs(text) {
@@ -457,15 +451,8 @@ if (bot) {
 
     try {
       logger.info(`Ручной скан: ${symbol}`);
-      const cachedTicker = scanner.getCachedTicker(symbol);
-      const marketData = await exchange.getFullCoinData(symbol);
+      const marketData = await scanner.getFullCoinDataWS(symbol);
       logger.info(`Результат ручного скана ${symbol}: ${JSON.stringify(marketData)}`);
-
-      if (safeNumber(marketData.price) <= 0 && cachedTicker) {
-        logger.warn(`REST scan for ${symbol} returned incomplete data, using WebSocket cache`);
-        return ctx.reply(buildCachedScanSummary(symbol, cachedTicker));
-      }
-
       const signalType = getSignalType(marketData);
 
       if (signalType === 'SHORT') {
@@ -481,12 +468,6 @@ if (bot) {
       return ctx.reply(buildScanSummary(symbol, marketData));
     } catch (error) {
       logger.error(`/scan failed for ${symbol}: ${error.stack || error.message}`);
-      const cachedTicker = scanner.getCachedTicker(symbol);
-
-      if (cachedTicker) {
-        return ctx.reply(buildCachedScanSummary(symbol, cachedTicker));
-      }
-
       return ctx.reply('⏳ Кэш заполняется, подожди 30 секунд');
     }
   });
