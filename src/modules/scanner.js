@@ -1,6 +1,8 @@
 const WebSocket = require('ws');
 const config = require('../config');
 const logger = require('../utils/logger');
+const exchange = require('./exchange');
+const staticBybitSymbols = require('../data/bybitSymbols');
 
 const BINANCE_MINI_TICKER_WS_URLS = [
   'wss://fstream.binance.com/ws/!miniTicker@arr',
@@ -16,6 +18,7 @@ const lastSignalSentAt = new Map();
 const tickers = new Map();
 const priceHistory = new Map();
 const startTime = Date.now();
+const bybitSymbols = new Set(staticBybitSymbols);
 
 let ws = null;
 let reconnectTimer = null;
@@ -25,6 +28,8 @@ let wsEndpointIndex = 0;
 let reconnectAttempts = 0;
 let scanHandler = null;
 let oiStreamUnavailable = false;
+
+logger.info(`Bybit symbols loaded: ${bybitSymbols.size} pairs (static list)`);
 
 function getSignalCooldownMs() {
   return config.SIGNAL_COOLDOWN_HOURS * 60 * 60 * 1000;
@@ -42,6 +47,48 @@ function canSendSignal(symbol) {
 
 function markSignalSent(symbol) {
   lastSignalSentAt.set(symbol, Date.now());
+}
+
+function isKnownBybitSymbol(symbol) {
+  return Boolean(symbol && bybitSymbols.has(symbol.toUpperCase()));
+}
+
+function getBybitSymbolCount() {
+  return bybitSymbols.size;
+}
+
+function withTimeout(promise, timeoutMs, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    }),
+  ]);
+}
+
+async function loadBybitSymbolsFromApi() {
+  try {
+    const apiSymbols = await withTimeout(exchange.getBybitSymbols(), 30_000, 'Bybit symbols API load');
+    const symbols = apiSymbols instanceof Map
+      ? Array.from(apiSymbols.keys())
+      : Array.from(apiSymbols || []);
+
+    if (symbols.length === 0) {
+      throw new Error('Bybit symbols API returned empty list');
+    }
+
+    bybitSymbols.clear();
+
+    for (const symbol of symbols) {
+      if (typeof symbol === 'string') {
+        bybitSymbols.add(symbol.toUpperCase());
+      }
+    }
+
+    logger.info(`Bybit symbols: loaded from API (${bybitSymbols.size})`);
+  } catch (error) {
+    logger.warn(`Bybit symbols: using static list (${bybitSymbols.size}) - ${error.message}`);
+  }
 }
 
 function normalizeMiniTicker(ticker) {
@@ -227,6 +274,7 @@ function connectTickerStream() {
 function startTickerStream(onScan) {
   scanHandler = onScan;
   connectTickerStream();
+  loadBybitSymbolsFromApi();
 
   if (!scanTimer) {
     scanTimer = setInterval(() => {
@@ -294,6 +342,10 @@ function getSignalType(coinData) {
   }
 
   if (coinData.volume24h < config.MIN_VOLUME_24H) {
+    return null;
+  }
+
+  if (!isKnownBybitSymbol(coinData.symbol)) {
     return null;
   }
 
@@ -462,6 +514,13 @@ async function scanMarket() {
       ...coin,
       change1h: getRealChange1h(coin.symbol),
     }))
+    .filter((coin) => {
+      if (!isKnownBybitSymbol(coin.symbol)) {
+        return false;
+      }
+
+      return true;
+    })
     .filter((coin) => Number.isFinite(coin.volume24h) && coin.volume24h >= config.MIN_VOLUME_24H)
     .filter((coin) => coin.change1h !== null && coin.change1h >= config.LONG_MIN_PUMP)
     .filter((coin) => canSendSignal(coin.symbol))
@@ -511,6 +570,8 @@ module.exports = {
   getCachedPrice,
   getCacheSize,
   isConnected,
+  isKnownBybitSymbol,
+  getBybitSymbolCount,
   isWarmingUp,
   getWarmupRemainingMs,
   getRealChange1h,

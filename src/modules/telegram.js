@@ -444,6 +444,10 @@ if (bot) {
       const marketData = await scanner.getFullCoinDataWS(symbol);
       logger.info(`Результат ручного скана ${symbol}: ${JSON.stringify(marketData)}`);
 
+      if (!scanner.isKnownBybitSymbol(symbol)) {
+        return ctx.reply(`${buildScanSummary(symbol, marketData)}\n\n❌ Монеты нет в текущем списке Bybit pairs, сигнал не отправляется.`);
+      }
+
       const signalType = scanner.getSignalType(marketData);
 
       if (signalType === 'SHORT') {
