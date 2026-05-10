@@ -1,4 +1,4 @@
-const { Telegraf } = require('telegraf');
+const { Markup, Telegraf } = require('telegraf');
 const config = require('../config');
 const logger = require('../utils/logger');
 const bybit = require('./bybit');
@@ -10,6 +10,17 @@ const risk = require('./risk');
 const bot = config.TELEGRAM_BOT_TOKEN ? new Telegraf(config.TELEGRAM_BOT_TOKEN) : null;
 const COMMAND_ERROR_MESSAGE = '❌ Ошибка при выполнении команды';
 const ANALYSIS_UNAVAILABLE_MESSAGE = '⚠️ Анализ временно недоступен, попробуйте позже';
+const TELEGRAM_COMMANDS = [
+  { command: 'start', description: 'Запуск бота' },
+  { command: 'help', description: 'Список команд' },
+  { command: 'scan', description: 'Сканировать монету: /scan SYMBOL' },
+  { command: 'analyze', description: 'Анализ позиции: /analyze SYMBOL TYPE PRICE' },
+  { command: 'enter', description: 'Открыть позицию: /enter SYMBOL TYPE PRICE' },
+  { command: 'close', description: 'Закрыть позицию: /close SYMBOL' },
+  { command: 'positions', description: 'Открытые позиции' },
+  { command: 'stats', description: 'Статистика: /stats today или /stats week' },
+  { command: 'settings', description: 'Настройки бота' },
+];
 
 function isQuietHours(date = new Date()) {
   const currentHour = date.getUTCHours();
@@ -209,6 +220,129 @@ function buildStatsMessage(title, stats, includeDailyLimit = false) {
   return lines.join('\n');
 }
 
+function buildMainKeyboard() {
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback('📋 Позиции', 'cmd:positions'),
+      Markup.button.callback('📊 Статистика', 'cmd:stats_today'),
+    ],
+    [
+      Markup.button.callback('⚙️ Настройки', 'cmd:settings'),
+      Markup.button.callback('❓ Помощь', 'cmd:help'),
+    ],
+  ]);
+}
+
+function getHelpMessage() {
+  return [
+    '<b>Доступные команды:</b>',
+    '',
+    '/start — запустить бота',
+    '/help — список команд',
+    '/scan SYMBOL — ручной скан монеты, пример: /scan BTCUSDT',
+    '/analyze SYMBOL TYPE ENTRY_PRICE — анализ позиции, пример: /analyze XYZUSDT short 0.084',
+    '/enter SYMBOL TYPE PRICE [SIZE] — открыть позицию, пример: /enter XYZUSDT short 0.084 25',
+    '/close SYMBOL [PRICE] — закрыть позицию, пример: /close XYZUSDT 0.077',
+    '/positions — список открытых позиций',
+    '/stats [today|week] — статистика за день или неделю',
+    '/settings — текущие настройки',
+    '',
+    'Сканер работает автоматически каждые 5 минут.',
+  ].join('\n');
+}
+
+function getStartMessage() {
+  return [
+    '🔴 PumpHunter запущен.',
+    '',
+    'Я сканирую фьючерсы Bybit, ищу LONG/SHORT сигналы и умею анализировать открытую позицию через OpenAI.',
+    '',
+    'Напиши /help, чтобы увидеть доступные команды.',
+  ].join('\n');
+}
+
+async function replyHelp(ctx) {
+  return ctx.reply(getHelpMessage(), {
+    parse_mode: 'HTML',
+    ...buildMainKeyboard(),
+  });
+}
+
+async function replySettings(ctx) {
+  try {
+    const dailyLimit = config.INITIAL_DEPOSIT * (config.DAILY_LOSS_LIMIT_PERCENT / 100);
+    const defaultPositionSize = risk.calculatePositionSize();
+
+    return ctx.reply(
+      [
+        '⚙️ Текущие настройки:',
+        '',
+        `Депозит: $${config.INITIAL_DEPOSIT.toFixed(2)}`,
+        `Размер позиции по умолчанию: $${defaultPositionSize.toFixed(2)}`,
+        `Дневной лимит убытка: -$${dailyLimit.toFixed(2)} (${config.DAILY_LOSS_LIMIT_PERCENT}%)`,
+        `Тихие часы: ${String(config.QUIET_HOURS_START).padStart(2, '0')}:00-${String(config.QUIET_HOURS_END).padStart(2, '0')}:00 UTC`,
+      ].join('\n')
+    );
+  } catch (error) {
+    logger.error(`/settings failed: ${error.message}`);
+    return ctx.reply(COMMAND_ERROR_MESSAGE);
+  }
+}
+
+async function replyStats(ctx, period = 'today') {
+  try {
+    if (period === 'week') {
+      return ctx.reply(buildStatsMessage('Статистика за неделю', database.getWeeklyStats()));
+    }
+
+    const today = risk.getTodayDate();
+    return ctx.reply(buildStatsMessage('Статистика за сегодня', database.getDailyPnl(today), true));
+  } catch (error) {
+    logger.error(`/stats failed: ${error.message}`);
+    return ctx.reply(COMMAND_ERROR_MESSAGE);
+  }
+}
+
+async function replyPositions(ctx) {
+  try {
+    const positions = database.getOpenPositions();
+
+    if (positions.length === 0) {
+      return ctx.reply('📋 Нет открытых позиций');
+    }
+
+    const lines = ['📋 Открытые позиции:', ''];
+
+    for (const position of positions) {
+      try {
+        const ticker = await bybit.getTicker(position.symbol);
+        const pnlPercent = calculatePnlPercent(position.type, position.entry_price, ticker.price);
+        const pnlUsd = calculatePnlUsd(position.type, position.entry_price, ticker.price, position.size_usd);
+
+        lines.push(
+          `${position.symbol} ${position.type}`,
+          `Вход: ${formatPrice(position.entry_price)} | Сейчас: ${formatPrice(ticker.price)}`,
+          `Размер: $${Number(position.size_usd).toFixed(2)} | P&L: ${formatUsd(pnlUsd)} (${formatPercent(pnlPercent)})`,
+          ''
+        );
+      } catch (error) {
+        logger.warn(`Failed to fetch current price for ${position.symbol}: ${error.message}`);
+        lines.push(
+          `${position.symbol} ${position.type}`,
+          `Вход: ${formatPrice(position.entry_price)} | Сейчас: цена недоступна`,
+          `Размер: $${Number(position.size_usd).toFixed(2)}`,
+          ''
+        );
+      }
+    }
+
+    return ctx.reply(lines.join('\n').trim());
+  } catch (error) {
+    logger.error(`/positions failed: ${error.message}`);
+    return ctx.reply(COMMAND_ERROR_MESSAGE);
+  }
+}
+
 if (bot) {
   bot.catch((error, ctx) => {
     logger.error(`Telegram handler failed for update ${ctx.update?.update_id}: ${error.message}`);
@@ -218,36 +352,11 @@ if (bot) {
   });
 
   bot.start((ctx) => {
-    return ctx.reply(
-      [
-        '🔴 PumpHunter запущен.',
-        '',
-        'Я сканирую фьючерсы Bybit, ищу LONG/SHORT сигналы и умею анализировать открытую позицию через OpenAI.',
-        '',
-        'Напиши /help, чтобы увидеть доступные команды.',
-      ].join('\n')
-    );
+    return ctx.reply(getStartMessage(), buildMainKeyboard());
   });
 
   bot.help((ctx) => {
-    return ctx.reply(
-      [
-        '<b>Доступные команды:</b>',
-        '',
-        '/start — запустить бота',
-        '/help — список команд',
-        '/scan SYMBOL — ручной скан монеты, пример: /scan BTCUSDT',
-        '/analyze SYMBOL TYPE ENTRY_PRICE — анализ позиции, пример: /analyze XYZUSDT short 0.084',
-        '/enter SYMBOL TYPE PRICE [SIZE] — открыть позицию, пример: /enter XYZUSDT short 0.084 25',
-        '/close SYMBOL [PRICE] — закрыть позицию, пример: /close XYZUSDT 0.077',
-        '/positions — список открытых позиций',
-        '/stats [today|week] — статистика за день или неделю',
-        '/settings — текущие настройки',
-        '',
-        'Сканер работает автоматически каждые 5 минут.',
-      ].join('\n'),
-      { parse_mode: 'HTML' }
-    );
+    return replyHelp(ctx);
   });
 
   bot.command('analyze', async (ctx) => {
@@ -403,81 +512,38 @@ if (bot) {
   });
 
   bot.command('positions', async (ctx) => {
-    try {
-      const positions = database.getOpenPositions();
-
-      if (positions.length === 0) {
-        return ctx.reply('📋 Нет открытых позиций');
-      }
-
-      const lines = ['📋 Открытые позиции:', ''];
-
-      for (const position of positions) {
-        try {
-          const ticker = await bybit.getTicker(position.symbol);
-          const pnlPercent = calculatePnlPercent(position.type, position.entry_price, ticker.price);
-          const pnlUsd = calculatePnlUsd(position.type, position.entry_price, ticker.price, position.size_usd);
-
-          lines.push(
-            `${position.symbol} ${position.type}`,
-            `Вход: ${formatPrice(position.entry_price)} | Сейчас: ${formatPrice(ticker.price)}`,
-            `Размер: $${Number(position.size_usd).toFixed(2)} | P&L: ${formatUsd(pnlUsd)} (${formatPercent(pnlPercent)})`,
-            ''
-          );
-        } catch (error) {
-          logger.warn(`Failed to fetch current price for ${position.symbol}: ${error.message}`);
-          lines.push(
-            `${position.symbol} ${position.type}`,
-            `Вход: ${formatPrice(position.entry_price)} | Сейчас: цена недоступна`,
-            `Размер: $${Number(position.size_usd).toFixed(2)}`,
-            ''
-          );
-        }
-      }
-
-      return ctx.reply(lines.join('\n').trim());
-    } catch (error) {
-      logger.error(`/positions failed: ${error.message}`);
-      return ctx.reply(COMMAND_ERROR_MESSAGE);
-    }
+    return replyPositions(ctx);
   });
 
   bot.command('stats', (ctx) => {
     const [, periodRaw] = ctx.message.text.trim().split(/\s+/);
     const period = (periodRaw || 'today').toLowerCase();
 
-    try {
-      if (period === 'week') {
-        return ctx.reply(buildStatsMessage('Статистика за неделю', database.getWeeklyStats()));
-      }
-
-      const today = risk.getTodayDate();
-      return ctx.reply(buildStatsMessage('Статистика за сегодня', database.getDailyPnl(today), true));
-    } catch (error) {
-      logger.error(`/stats failed: ${error.message}`);
-      return ctx.reply(COMMAND_ERROR_MESSAGE);
-    }
+    return replyStats(ctx, period);
   });
 
   bot.command('settings', (ctx) => {
-    try {
-      const dailyLimit = config.INITIAL_DEPOSIT * (config.DAILY_LOSS_LIMIT_PERCENT / 100);
-      const defaultPositionSize = risk.calculatePositionSize();
+    return replySettings(ctx);
+  });
 
-      return ctx.reply(
-        [
-          '⚙️ Текущие настройки:',
-          '',
-          `Депозит: $${config.INITIAL_DEPOSIT.toFixed(2)}`,
-          `Размер позиции по умолчанию: $${defaultPositionSize.toFixed(2)}`,
-          `Дневной лимит убытка: -$${dailyLimit.toFixed(2)} (${config.DAILY_LOSS_LIMIT_PERCENT}%)`,
-          `Тихие часы: ${String(config.QUIET_HOURS_START).padStart(2, '0')}:00-${String(config.QUIET_HOURS_END).padStart(2, '0')}:00 UTC`,
-        ].join('\n')
-      );
-    } catch (error) {
-      logger.error(`/settings failed: ${error.message}`);
-      return ctx.reply(COMMAND_ERROR_MESSAGE);
-    }
+  bot.action('cmd:positions', async (ctx) => {
+    await ctx.answerCbQuery('/positions');
+    return replyPositions(ctx);
+  });
+
+  bot.action('cmd:stats_today', async (ctx) => {
+    await ctx.answerCbQuery('/stats today');
+    return replyStats(ctx, 'today');
+  });
+
+  bot.action('cmd:settings', async (ctx) => {
+    await ctx.answerCbQuery('/settings');
+    return replySettings(ctx);
+  });
+
+  bot.action('cmd:help', async (ctx) => {
+    await ctx.answerCbQuery('/help');
+    return replyHelp(ctx);
   });
 }
 
@@ -485,6 +551,13 @@ async function startBot() {
   if (!bot) {
     logger.warn('Telegram bot token is missing. Bot launch skipped.');
     return;
+  }
+
+  try {
+    await bot.telegram.setMyCommands(TELEGRAM_COMMANDS);
+    logger.info('Telegram command menu registered');
+  } catch (error) {
+    logger.error(`Telegram command menu registration failed: ${error.message}`);
   }
 
   bot.launch()
