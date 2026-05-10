@@ -71,6 +71,10 @@ function formatPercent(value) {
 }
 
 function getVolumeTrend(marketData) {
+  if (marketData.volumeTrend) {
+    return marketData.volumeTrend;
+  }
+
   const volumeStats = marketData.volumeStats || {};
 
   if (volumeStats.isRecentVolumeFallingFromPeak) {
@@ -108,6 +112,11 @@ function getSignalType(marketData) {
   return null;
 }
 
+function safeNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
 function buildAnalysisMessage(symbol, type, entryPrice, marketData, pnlPercent, aiAnalysis) {
   const volumeTrend = getVolumeTrend(marketData);
 
@@ -133,11 +142,13 @@ function buildScanSummary(symbol, marketData) {
   return [
     `📋 СКАН: ${symbol}`,
     '',
-    `Цена: ${formatPrice(marketData.price)}`,
-    `Изменение 1ч: ${formatPercent(marketData.change1h)}`,
-    `Объём 24ч: ${formatVolume(marketData.volume24h)}`,
-    `OI изменение: ${formatPercent(marketData.oiChange)}`,
-    `Funding: ${formatPercent(marketData.fundingRate)}`,
+    `Цена: ${formatPrice(safeNumber(marketData.price))}`,
+    `Изменение 1ч: ${formatPercent(safeNumber(marketData.change1h))}`,
+    `Объём 24ч: ${formatVolume(safeNumber(marketData.volume24h))}`,
+    `Тренд объёма: ${getVolumeTrend(marketData)}`,
+    `OI изменение: ${formatPercent(safeNumber(marketData.oiChange))}`,
+    `OI тренд: ${marketData.oiTrend || 'нет данных'}`,
+    `Funding: ${formatPercent(safeNumber(marketData.fundingRate))}`,
     '',
     '❌ Условия для сигнала не выполнены.',
   ].join('\n');
@@ -427,7 +438,9 @@ if (bot) {
     const symbol = normalizeSymbol(symbolRaw);
 
     try {
+      logger.info(`Ручной скан: ${symbol}`);
       const marketData = await bybit.getFullCoinData(symbol);
+      logger.info(`Результат ручного скана ${symbol}: ${JSON.stringify(marketData)}`);
       const signalType = getSignalType(marketData);
 
       if (signalType === 'SHORT') {
@@ -442,7 +455,7 @@ if (bot) {
 
       return ctx.reply(buildScanSummary(symbol, marketData));
     } catch (error) {
-      logger.error(`/scan failed: ${error.message}`);
+      logger.error(`/scan failed for ${symbol}: ${error.stack || error.message}`);
       return ctx.reply(COMMAND_ERROR_MESSAGE);
     }
   });

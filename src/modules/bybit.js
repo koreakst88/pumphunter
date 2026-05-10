@@ -90,6 +90,10 @@ function calculateOiTrend(oiChange) {
 
 function calculateVolumeStats(klines) {
   const volumes = klines.map((kline) => kline.volume).filter(Number.isFinite);
+  if (volumes.length === 0) {
+    return getEmptyVolumeStats();
+  }
+
   const recentVolumes = volumes.slice(-3);
   const previousVolumes = volumes.slice(0, -1);
   const maxVolume1h = Math.max(...volumes);
@@ -109,6 +113,45 @@ function calculateVolumeStats(klines) {
     recentVsPeakRatio: maxVolume1h > 0 ? recentAverageVolume / maxVolume1h : 0,
     isRecentVolumeFallingFromPeak: maxVolume1h > 0 && recentAverageVolume <= maxVolume1h * 0.7,
   };
+}
+
+function getEmptyVolumeStats() {
+  return {
+    currentVolume: 0,
+    maxVolume1h: 0,
+    recentAverageVolume: 0,
+    currentToAverageMultiplier: 0,
+    recentVsPeakRatio: 0,
+    isRecentVolumeFallingFromPeak: false,
+    volumeTrend: 'нет данных',
+  };
+}
+
+function calculatePriceChangeFromKlines(symbol, klines) {
+  if (!Array.isArray(klines) || klines.length < 2) {
+    logger.warn(`Not enough kline data for ${symbol}: received ${klines?.length || 0}`);
+    return 0;
+  }
+
+  const firstOpen = klines[0].open;
+  const lastClose = klines[klines.length - 1].close;
+
+  if (!Number.isFinite(firstOpen) || firstOpen <= 0 || !Number.isFinite(lastClose)) {
+    logger.warn(`Invalid kline prices for ${symbol}`);
+    return 0;
+  }
+
+  return ((lastClose - firstOpen) / firstOpen) * 100;
+}
+
+async function safeRequest(label, fallback, handler) {
+  try {
+    const result = await handler();
+    return result ?? fallback;
+  } catch (error) {
+    logger.warn(`${label} failed: ${error.stack || error.message}`);
+    return fallback;
+  }
 }
 
 async function getTopCoins() {
@@ -236,25 +279,47 @@ async function getFundingRate(symbol) {
 }
 
 async function getFullCoinData(symbol, tickerData = null) {
-  const [change1h, openInterest, fundingRate, klines, ticker] = await Promise.all([
-    getPriceChange1h(symbol),
-    getOpenInterest(symbol),
-    getFundingRate(symbol),
-    getKlines(symbol, '5', 12),
-    tickerData ? Promise.resolve(tickerData) : getTicker(symbol),
+  if (!symbol) {
+    throw new Error('Symbol is required for getFullCoinData');
+  }
+
+  const normalizedSymbol = symbol.toUpperCase();
+  const fallbackTicker = {
+    symbol: normalizedSymbol,
+    price: 0,
+    volume24h: 0,
+  };
+  const fallbackOpenInterest = {
+    history: [],
+    current: 0,
+    changePercent: 0,
+    trend: 'нет данных',
+  };
+
+  const [ticker, klines, openInterest, fundingRate] = await Promise.all([
+    tickerData ? Promise.resolve(tickerData) : safeRequest(`Ticker for ${normalizedSymbol}`, fallbackTicker, () => getTicker(normalizedSymbol)),
+    safeRequest(`Klines for ${normalizedSymbol}`, [], () => getKlines(normalizedSymbol, '5', 12)),
+    safeRequest(`Open interest for ${normalizedSymbol}`, fallbackOpenInterest, () => getOpenInterest(normalizedSymbol)),
+    safeRequest(`Funding rate for ${normalizedSymbol}`, 0, () => getFundingRate(normalizedSymbol)),
   ]);
+  const safeTicker = ticker || fallbackTicker;
+  const safeKlines = Array.isArray(klines) ? klines : [];
+  const safeFundingRate = Number.isFinite(Number(fundingRate)) ? Number(fundingRate) : 0;
+  const volumeStats = safeKlines.length > 0 ? calculateVolumeStats(safeKlines) : getEmptyVolumeStats();
+  const change1h = calculatePriceChangeFromKlines(normalizedSymbol, safeKlines);
 
   return {
-    symbol,
-    price: ticker.price,
+    symbol: normalizedSymbol,
+    price: safeTicker.price,
     change1h,
-    volume24h: ticker.volume24h,
+    volume24h: safeTicker.volume24h,
     openInterest: openInterest.current,
     oiChange: openInterest.changePercent,
     oiTrend: openInterest.trend,
-    fundingRate,
-    klines,
-    volumeStats: calculateVolumeStats(klines),
+    fundingRate: safeFundingRate,
+    klines: safeKlines,
+    volumeStats,
+    volumeTrend: volumeStats.volumeTrend || undefined,
   };
 }
 
