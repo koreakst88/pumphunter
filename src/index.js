@@ -8,7 +8,6 @@ const database = require('./modules/database');
 const risk = require('./modules/risk');
 const bybit = require('./modules/bybit');
 
-const startTime = Date.now();
 let isScanning = false;
 let cronTask = null;
 let lastDailyStopNotificationDate = null;
@@ -93,13 +92,7 @@ async function shutdown(signal) {
     cronTask.stop();
   }
 
-  if (Date.now() - startTime < 10_000) {
-    logger.info('Process lifetime is under 10 seconds, skipping shutdown notification');
-    process.exit(0);
-  }
-
   database.saveDb();
-  await telegram.sendNotification('⛔ PumpHunter остановлен');
   telegram.stopBot(signal);
   process.exit(0);
 }

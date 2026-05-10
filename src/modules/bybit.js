@@ -11,7 +11,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function buildProxyUrl(path, params = {}) {
   const queryString = new URLSearchParams(params).toString();
-  return `${config.SUPABASE_PROXY_URL}?path=${path}&params=${encodeURIComponent(queryString)}`;
+  return `${config.SUPABASE_PROXY_URL}?path=${path}&params=${encodeURIComponent(queryString)}&base=bytick`;
 }
 
 async function makeRequest(path, params = {}) {

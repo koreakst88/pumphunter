@@ -11,7 +11,7 @@ module.exports = {
 
   // Exchange
   EXCHANGE: 'bybit',
-  BYBIT_BASE_URL: 'https://api.bybit.com',
+  BYBIT_BASE_URL: process.env.BYBIT_BASE_URL || 'https://api.bytick.com',
 
   // Coin filters
   MIN_VOLUME_24H: 30_000_000,
