@@ -67,6 +67,7 @@ function normalizeBybitTicker(ticker) {
   const turnover24h = Number(ticker.turnover24h);
   const volume24h = Number(ticker.volume24h);
   const price24hPcnt = Number(ticker.price24hPcnt);
+  const prevPrice1h = Number(ticker.prevPrice1h);
   const fundingRate = Number(ticker.fundingRate);
   const openInterest = Number(ticker.openInterest);
   const openInterestValue = Number(ticker.openInterestValue);
@@ -83,6 +84,7 @@ function normalizeBybitTicker(ticker) {
   return {
     symbol,
     price,
+    prevPrice1h: Number.isFinite(prevPrice1h) ? prevPrice1h : 0,
     price24hPcnt: Number.isFinite(price24hPcnt) ? price24hPcnt : 0,
     change24h: Number.isFinite(price24hPcnt) ? price24hPcnt * 100 : 0,
     volume24h: Number.isFinite(turnover24h) && turnover24h > 0
@@ -112,6 +114,7 @@ function upsertTickerFromPatch(symbol, patch, timestamp = Date.now()) {
   const ticker = normalizeBybitTicker({
     symbol,
     lastPrice: patch.lastPrice ?? existing?.price,
+    prevPrice1h: patch.prevPrice1h ?? existing?.prevPrice1h,
     turnover24h: patch.turnover24h ?? existing?.volume24h,
     volume24h: patch.volume24h,
     price24hPcnt: patch.price24hPcnt ?? existing?.price24hPcnt,
@@ -174,12 +177,12 @@ function recordPricePoint(symbol, price, timestamp = Date.now()) {
 function getRealChange1h(symbol) {
   const normalizedSymbol = symbol.toUpperCase();
   const ticker = tickers.get(normalizedSymbol);
-  const history = priceHistory.get(normalizedSymbol) || [];
 
-  if (!ticker || history.length === 0) {
+  if (!ticker) {
     return null;
   }
 
+  const history = priceHistory.get(normalizedSymbol) || [];
   const now = Date.now();
   const targetTimestamp = now - CHANGE_1H_TARGET_MS;
   let bestPoint = null;
@@ -200,11 +203,18 @@ function getRealChange1h(symbol) {
     }
   }
 
-  if (!bestPoint || !Number.isFinite(bestPoint.price) || bestPoint.price <= 0) {
-    return null;
+  if (bestPoint && Number.isFinite(bestPoint.price) && bestPoint.price > 0) {
+    return ((ticker.price - bestPoint.price) / bestPoint.price) * 100;
   }
 
-  return ((ticker.price - bestPoint.price) / bestPoint.price) * 100;
+  const prevPrice1h = Number(ticker.prevPrice1h);
+  const lastPrice = Number(ticker.lastPrice || ticker.price);
+
+  if (prevPrice1h > 0 && lastPrice > 0) {
+    return ((lastPrice - prevPrice1h) / prevPrice1h) * 100;
+  }
+
+  return null;
 }
 
 function isWarmingUp() {
