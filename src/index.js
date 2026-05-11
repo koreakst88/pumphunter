@@ -99,7 +99,7 @@ async function main() {
 
   scanner.startTickerStream(runScan);
 
-  logger.info(`PumpHunter WebSocket scanner started. Signal check: every ${config.SCAN_INTERVAL_MINUTES} minutes`);
+  logger.info(`PumpHunter Bybit ticker scanner started. Signal check: every ${config.SCAN_INTERVAL_MINUTES} minutes`);
 }
 
 process.once('SIGINT', shutdown);

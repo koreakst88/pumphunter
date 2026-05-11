@@ -21,7 +21,7 @@ const TELEGRAM_COMMANDS = [
   { command: 'positions', description: 'Открытые позиции' },
   { command: 'stats', description: 'Статистика: /stats today или /stats week' },
   { command: 'settings', description: 'Настройки бота' },
-  { command: 'ping', description: 'Проверка WebSocket сканера' },
+  { command: 'ping', description: 'Проверка Bybit ticker сканера' },
 ];
 
 function isQuietHours(date = new Date()) {
@@ -252,7 +252,7 @@ function getHelpMessage() {
     '/positions — список открытых позиций',
     '/stats [today|week] — статистика за день или неделю',
     '/settings — текущие настройки',
-    '/ping — проверить WebSocket сканер',
+    '/ping — проверить Bybit ticker сканер',
     '',
     'Сканер работает автоматически каждую минуту.',
   ].join('\n');
@@ -262,7 +262,7 @@ function getStartMessage() {
   return [
     '🔴 PumpHunter запущен.',
     '',
-    'Я сканирую фьючерсы Binance, ищу LONG/SHORT сигналы и умею анализировать открытую позицию через OpenAI.',
+    'Я сканирую фьючерсы Bybit, ищу LONG/SHORT сигналы и умею анализировать открытую позицию через OpenAI.',
     '',
     'Напиши /help, чтобы увидеть доступные команды.',
   ].join('\n');
@@ -476,7 +476,7 @@ if (bot) {
         return ctx.reply('⏳ Кэш заполняется, подожди 30 секунд');
       }
 
-      return ctx.reply(`✅ Сканер работает. BTC: ${formatPrice(price)} (из WebSocket кэша, ${cacheSize} монет)`);
+      return ctx.reply(`✅ Сканер работает. BTC: ${formatPrice(price)} (из Bybit ticker кэша, ${cacheSize} монет)`);
     } catch (error) {
       logger.error(`/ping failed: ${error.stack || error.message}`);
       return ctx.reply(COMMAND_ERROR_MESSAGE);
