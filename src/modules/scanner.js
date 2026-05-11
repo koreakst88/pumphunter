@@ -614,17 +614,26 @@ async function getFullCoinDataWS(symbol) {
 async function scanMarket() {
   logger.info(`Starting market scan from Bybit ticker cache, tickers=${tickers.size}`);
 
+  const allCoins = Array.from(tickers.values()).map((coin) => ({
+    ...coin,
+    change1h: getRealChange1h(coin.symbol),
+  }));
+  const changes = allCoins.map((coin) => coin.change1h).filter((change) => Number.isFinite(change));
+  const nullCount = allCoins.filter((coin) => coin.change1h === null).length;
+  const top5 = allCoins
+    .filter((coin) => Number.isFinite(coin.change1h))
+    .sort((a, b) => b.change1h - a.change1h)
+    .slice(0, 5)
+    .map((coin) => `${coin.symbol}=${coin.change1h?.toFixed(2)}%`);
+  logger.info(`[DIAG] total=${allCoins.length}, change1h_null=${nullCount}, `
+    + `finite=${changes.length}, max=${changes.length ? Math.max(...changes).toFixed(2) : 'n/a'}%, `
+    + `top5=[${top5.join(', ')}]`);
+
   if (isWarmingUp()) {
     const minutesLeft = Math.ceil(getWarmupRemainingMs() / 60_000);
     logger.info(`Scanner warming up, ${minutesLeft} minutes until signals are enabled`);
     return [];
   }
-
-  const allCoins = Array.from(tickers.values()).map((coin) => ({
-    ...coin,
-    change1h: getRealChange1h(coin.symbol),
-  }));
-  logger.info(`[DIAG] Total tickers in cache: ${allCoins.length}`);
 
   const withVolume = allCoins.filter((coin) => Number.isFinite(coin.volume24h));
   logger.info(`[DIAG] After volume filter: ${withVolume.length} (dropped ${allCoins.length - withVolume.length})`);
@@ -634,14 +643,14 @@ async function scanMarket() {
 
   const nullChange = knownSymbol.filter((coin) => coin.change1h === null).length;
   const nanChange = knownSymbol.filter((coin) => !Number.isFinite(coin.change1h) && coin.change1h !== null).length;
-  const changes = knownSymbol.map((coin) => coin.change1h).filter((change) => Number.isFinite(change));
-  const maxChange = changes.length ? Math.max(...changes) : null;
-  const top5 = knownSymbol
+  const knownChanges = knownSymbol.map((coin) => coin.change1h).filter((change) => Number.isFinite(change));
+  const maxChange = knownChanges.length ? Math.max(...knownChanges) : null;
+  const knownTop5 = knownSymbol
     .filter((coin) => Number.isFinite(coin.change1h))
     .sort((a, b) => b.change1h - a.change1h)
     .slice(0, 5)
     .map((coin) => `${coin.symbol}=${coin.change1h?.toFixed(2)}%`);
-  logger.info(`[DIAG] change1h stats: null=${nullChange}, nan=${nanChange}, max=${maxChange?.toFixed(2)}%, top5=[${top5.join(', ')}]`);
+  logger.info(`[DIAG] change1h stats: null=${nullChange}, nan=${nanChange}, max=${maxChange?.toFixed(2)}%, top5=[${knownTop5.join(', ')}]`);
 
   const withChange = knownSymbol.filter((coin) => coin.change1h !== null && coin.change1h >= config.LONG_MIN_PUMP);
   logger.info(`[DIAG] After change1h >= ${config.LONG_MIN_PUMP}% filter: ${withChange.length}`);
