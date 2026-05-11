@@ -14,7 +14,6 @@ module.exports = {
   BINANCE_BASE_URL: 'https://fapi.binance.com',
 
   // Coin filters
-  MIN_VOLUME_24H: 100_000_000, // $100M minimum
   TOP_COINS_COUNT: 500,
   EXCLUDED_PAIRS: [],
 

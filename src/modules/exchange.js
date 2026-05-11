@@ -227,12 +227,16 @@ async function getBybitSymbols() {
       }
     }
 
-    const launchTimes = await fetchBybitLaunchTimes();
+    try {
+      const launchTimes = await fetchBybitLaunchTimes();
 
-    for (const [symbol, launchTime] of launchTimes.entries()) {
-      if (symbols.has(symbol) || launchTime > 0) {
-        symbols.set(symbol, launchTime);
+      for (const [symbol, launchTime] of launchTimes.entries()) {
+        if (symbols.has(symbol) || launchTime > 0) {
+          symbols.set(symbol, launchTime);
+        }
       }
+    } catch (error) {
+      logger.warn(`Bybit launch times fetch failed, using ticker symbols only: ${error.message}`);
     }
 
     if (symbols.size === 0) {
@@ -279,11 +283,11 @@ async function getTopCoins() {
     .map(normalizeTicker)
     .filter((coin) => coin.symbol.endsWith('USDT'))
     .filter((coin) => !config.EXCLUDED_PAIRS.includes(coin.symbol))
-    .filter((coin) => Number.isFinite(coin.volume24h) && coin.volume24h >= config.MIN_VOLUME_24H)
+    .filter((coin) => Number.isFinite(coin.volume24h))
     .sort((a, b) => b.volume24h - a.volume24h)
     .slice(0, config.TOP_COINS_COUNT);
 
-  logger.info(`Fetched ${coins.length} Binance futures coins with 24h volume >= $${config.MIN_VOLUME_24H}`);
+  logger.info(`Fetched ${coins.length} Binance futures coins`);
 
   return coins;
 }

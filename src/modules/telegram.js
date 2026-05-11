@@ -436,16 +436,20 @@ if (bot) {
     try {
       logger.info(`Ручной скан: ${symbol}`);
 
+      const warmupNotice = scanner.isWarmingUp()
+        ? '\n\n⏳ История 1ч ещё прогревается, поэтому импульс может быть 0.00%.'
+        : '';
+
       if (scanner.isWarmingUp()) {
         const minutesLeft = Math.ceil(scanner.getWarmupRemainingMs() / 60_000);
-        return ctx.reply(`⏳ Идёт прогрев истории цен. До точного /scan осталось примерно ${minutesLeft} мин.`);
+        logger.info(`Manual scan during warmup for ${symbol}: ${minutesLeft} minutes left`);
       }
 
       const marketData = await scanner.getFullCoinDataWS(symbol);
       logger.info(`Результат ручного скана ${symbol}: ${JSON.stringify(marketData)}`);
 
       if (!scanner.isKnownBybitSymbol(symbol)) {
-        return ctx.reply(`${buildScanSummary(symbol, marketData)}\n\n❌ Монеты нет в текущем списке Bybit pairs, сигнал не отправляется.`);
+        return ctx.reply(`${buildScanSummary(symbol, marketData)}${warmupNotice}\n\n❌ Монеты нет в текущем списке Bybit pairs, сигнал не отправляется.`);
       }
 
       const signalType = scanner.getSignalType(marketData);
@@ -460,7 +464,7 @@ if (bot) {
         return ctx.reply(signals.formatSignalMessage(signal), { parse_mode: 'HTML' });
       }
 
-      return ctx.reply(buildScanSummary(symbol, marketData));
+      return ctx.reply(`${buildScanSummary(symbol, marketData)}${warmupNotice}`);
     } catch (error) {
       logger.error(`/scan failed for ${symbol}: ${error.stack || error.message}`);
       return ctx.reply('⏳ Кэш заполняется, подожди 30 секунд');

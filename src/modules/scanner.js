@@ -1,5 +1,6 @@
 const axios = require('axios');
 const config = require('../config');
+const exchange = require('./exchange');
 const logger = require('../utils/logger');
 
 const BYBIT_BASE_URL = 'https://api.bybit.com';
@@ -8,6 +9,7 @@ const CHANGE_1H_TARGET_MS = 60 * 60 * 1000;
 const CHANGE_1H_MIN_AGE_MS = 55 * 60 * 1000;
 const CHANGE_1H_MAX_AGE_MS = 65 * 60 * 1000;
 const WARMUP_MS = 65 * 60 * 1000;
+const SYMBOL_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const lastSignalSentAt = new Map();
 const tickers = new Map();
 const priceHistory = new Map();
@@ -23,9 +25,11 @@ const bybitClient = axios.create({
 });
 
 let scanTimer = null;
+let symbolRefreshTimer = null;
 let scanHandler = null;
 let isFetchingTickers = false;
 let lastTickerFetchAt = 0;
+let bybitSymbols = new Set();
 
 function getSignalCooldownMs() {
   return config.SIGNAL_COOLDOWN_HOURS * 60 * 60 * 1000;
@@ -79,6 +83,35 @@ function normalizeBybitTicker(ticker) {
     fundingRate: Number.isFinite(fundingRate) ? fundingRate * 100 : 0,
     updatedAt: Date.now(),
   };
+}
+
+function loadStaticBybitSymbols() {
+  // Loaded only as a fallback, so the live API remains the source of truth.
+  // eslint-disable-next-line global-require
+  const staticSymbols = require('../data/bybitSymbols');
+  return new Set(staticSymbols);
+}
+
+async function loadBybitSymbols() {
+  try {
+    const apiSymbols = await exchange.getBybitSymbols();
+    const symbols = apiSymbols instanceof Map
+      ? new Set(apiSymbols.keys())
+      : new Set(apiSymbols || []);
+
+    if (symbols.size === 0) {
+      throw new Error('Bybit API returned an empty symbol list');
+    }
+
+    bybitSymbols = symbols;
+    logger.info(`Bybit symbols: loaded from API (${bybitSymbols.size})`);
+    return bybitSymbols;
+  } catch (error) {
+    bybitSymbols = loadStaticBybitSymbols();
+    logger.warn(`Bybit symbols: using static fallback (${bybitSymbols.size})`);
+    logger.warn(`Bybit symbols API load failed: ${error.message}`);
+    return bybitSymbols;
+  }
 }
 
 function recordPricePoint(symbol, price, timestamp = Date.now()) {
@@ -189,6 +222,39 @@ async function fetchBybitTickers() {
   }
 }
 
+async function fetchBybitTicker(symbol) {
+  const normalizedSymbol = symbol?.toUpperCase();
+
+  if (!normalizedSymbol) {
+    return null;
+  }
+
+  try {
+    const response = await bybitClient.get('/v5/market/tickers', {
+      params: {
+        category: 'linear',
+        symbol: normalizedSymbol,
+      },
+    });
+    const row = response.data?.result?.list?.[0];
+    const ticker = row ? normalizeBybitTicker(row) : null;
+
+    if (!ticker) {
+      return null;
+    }
+
+    const fetchedAt = Date.now();
+    ticker.updatedAt = fetchedAt;
+    tickers.set(ticker.symbol, ticker);
+    recordPricePoint(ticker.symbol, ticker.price, fetchedAt);
+
+    return ticker;
+  } catch (error) {
+    logger.warn(`Bybit ticker fetch failed for ${normalizedSymbol}: ${error.message}`);
+    return null;
+  }
+}
+
 async function refreshTickersAndScan() {
   try {
     await fetchBybitTickers();
@@ -204,9 +270,21 @@ async function refreshTickersAndScan() {
 function startTickerStream(onScan) {
   scanHandler = onScan;
 
+  loadBybitSymbols().catch((error) => {
+    logger.warn(`Initial Bybit symbols load failed: ${error.message}`);
+  });
+
   fetchBybitTickers().catch((error) => {
     logger.warn(`Initial Bybit ticker fetch failed: ${error.message}`);
   });
+
+  if (!symbolRefreshTimer) {
+    symbolRefreshTimer = setInterval(() => {
+      loadBybitSymbols().catch((error) => {
+        logger.warn(`Scheduled Bybit symbols refresh failed: ${error.message}`);
+      });
+    }, SYMBOL_REFRESH_INTERVAL_MS);
+  }
 
   if (!scanTimer) {
     scanTimer = setInterval(() => {
@@ -219,6 +297,11 @@ function startTickerStream(onScan) {
 }
 
 function stopTickerStream() {
+  if (symbolRefreshTimer) {
+    clearInterval(symbolRefreshTimer);
+    symbolRefreshTimer = null;
+  }
+
   if (scanTimer) {
     clearInterval(scanTimer);
     scanTimer = null;
@@ -251,11 +334,11 @@ function isConnected() {
 }
 
 function isKnownBybitSymbol(symbol) {
-  return Boolean(symbol && tickers.has(symbol.toUpperCase()));
+  return Boolean(symbol && bybitSymbols.has(symbol.toUpperCase()));
 }
 
 function getBybitSymbolCount() {
-  return tickers.size;
+  return bybitSymbols.size;
 }
 
 function getSignalType(coinData) {
@@ -263,10 +346,6 @@ function getSignalType(coinData) {
   const fundingRate = Number(coinData.fundingRate || 0);
 
   if (!Number.isFinite(change1h) || !Number.isFinite(Number(coinData.volume24h))) {
-    return null;
-  }
-
-  if (coinData.volume24h < config.MIN_VOLUME_24H) {
     return null;
   }
 
@@ -299,19 +378,30 @@ async function getFullCoinDataWS(symbol) {
   }
 
   const normalizedSymbol = symbol.toUpperCase();
-  const ticker = getCachedTicker(normalizedSymbol);
+  const ticker = getCachedTicker(normalizedSymbol) || await fetchBybitTicker(normalizedSymbol);
+  const volumeStats = getEmptyVolumeStats();
 
   if (!ticker) {
-    throw new Error(`Ticker cache is empty for ${normalizedSymbol}`);
+    logger.warn(`No Bybit ticker data available for ${normalizedSymbol}`);
+    return {
+      symbol: normalizedSymbol,
+      price: 0,
+      change1h: 0,
+      change24h: 0,
+      volume24h: 0,
+      openInterest: 0,
+      openInterestValue: 0,
+      oiChange: 0,
+      oiTrend: 'нет данных',
+      fundingRate: 0,
+      klines: [],
+      candles: [],
+      volumeStats,
+      volumeTrend: volumeStats.volumeTrend,
+    };
   }
 
-  const change1h = getRealChange1h(normalizedSymbol);
-
-  if (change1h === null) {
-    throw new Error(`Not enough 1h price history for ${normalizedSymbol}`);
-  }
-
-  const volumeStats = getEmptyVolumeStats();
+  const change1h = getRealChange1h(normalizedSymbol) ?? 0;
 
   return {
     symbol: normalizedSymbol,
@@ -345,7 +435,8 @@ async function scanMarket() {
       ...coin,
       change1h: getRealChange1h(coin.symbol),
     }))
-    .filter((coin) => Number.isFinite(coin.volume24h) && coin.volume24h >= config.MIN_VOLUME_24H)
+    .filter((coin) => Number.isFinite(coin.volume24h))
+    .filter((coin) => isKnownBybitSymbol(coin.symbol))
     .filter((coin) => coin.change1h !== null && coin.change1h >= config.LONG_MIN_PUMP)
     .filter((coin) => canSendSignal(coin.symbol))
     .sort((a, b) => b.volume24h - a.volume24h)
@@ -390,7 +481,9 @@ module.exports = {
   scanMarket,
   canSendSignal,
   markSignalSent,
+  loadBybitSymbols,
   fetchBybitTickers,
+  fetchBybitTicker,
   getCachedTicker,
   getCachedPrice,
   getCacheSize,
