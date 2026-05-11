@@ -1,9 +1,14 @@
 const axios = require('axios');
+const WebSocket = require('ws');
 const config = require('../config');
 const exchange = require('./exchange');
 const logger = require('../utils/logger');
 
 const BYBIT_BASE_URL = 'https://api.bybit.com';
+const BYBIT_WS_URL = 'wss://stream.bybit.com/v5/public/linear';
+const BYBIT_WS_BATCH_SIZE = 100;
+const BYBIT_WS_PING_INTERVAL_MS = 20_000;
+const BYBIT_WS_RECONNECT_DELAY_MS = 5_000;
 const PRICE_HISTORY_RETENTION_MS = 70 * 60 * 1000;
 const CHANGE_1H_TARGET_MS = 60 * 60 * 1000;
 const CHANGE_1H_MIN_AGE_MS = 55 * 60 * 1000;
@@ -26,10 +31,14 @@ const bybitClient = axios.create({
 
 let scanTimer = null;
 let symbolRefreshTimer = null;
+let wsReconnectTimer = null;
 let scanHandler = null;
 let isFetchingTickers = false;
 let lastTickerFetchAt = 0;
 let bybitSymbols = new Set();
+let wsShouldReconnect = false;
+const wsConnections = new Set();
+const wsPingTimers = new Map();
 
 function getSignalCooldownMs() {
   return config.SIGNAL_COOLDOWN_HOURS * 60 * 60 * 1000;
@@ -83,6 +92,43 @@ function normalizeBybitTicker(ticker) {
     fundingRate: Number.isFinite(fundingRate) ? fundingRate * 100 : 0,
     updatedAt: Date.now(),
   };
+}
+
+function chunkArray(items, chunkSize) {
+  const chunks = [];
+
+  for (let index = 0; index < items.length; index += chunkSize) {
+    chunks.push(items.slice(index, index + chunkSize));
+  }
+
+  return chunks;
+}
+
+function upsertTickerFromPatch(symbol, patch, timestamp = Date.now()) {
+  const existing = tickers.get(symbol);
+  const ticker = normalizeBybitTicker({
+    symbol,
+    lastPrice: patch.lastPrice ?? existing?.price,
+    turnover24h: patch.turnover24h ?? existing?.volume24h,
+    volume24h: patch.volume24h,
+    price24hPcnt: patch.price24hPcnt ?? existing?.price24hPcnt,
+    fundingRate: patch.fundingRate ?? (
+      Number.isFinite(Number(existing?.fundingRate)) ? Number(existing.fundingRate) / 100 : undefined
+    ),
+    openInterest: patch.openInterest ?? existing?.openInterest,
+    openInterestValue: patch.openInterestValue ?? existing?.openInterestValue,
+  });
+
+  if (!ticker) {
+    return null;
+  }
+
+  ticker.updatedAt = timestamp;
+  tickers.set(ticker.symbol, ticker);
+  recordPricePoint(ticker.symbol, ticker.price, timestamp);
+  lastTickerFetchAt = timestamp;
+
+  return ticker;
 }
 
 function loadStaticBybitSymbols() {
@@ -256,31 +302,137 @@ async function fetchBybitTicker(symbol) {
 }
 
 async function refreshTickersAndScan() {
-  try {
-    await fetchBybitTickers();
-  } catch (error) {
-    logger.warn(`Using previous Bybit ticker cache after fetch failure: ${error.message}`);
-  }
-
   if (scanHandler) {
     await scanHandler();
   }
 }
 
+function closeTickerSockets() {
+  for (const socket of wsConnections) {
+    const pingTimer = wsPingTimers.get(socket);
+
+    if (pingTimer) {
+      clearInterval(pingTimer);
+      wsPingTimers.delete(socket);
+    }
+
+    try {
+      socket.removeAllListeners('close');
+      socket.close();
+    } catch (error) {
+      logger.warn(`Bybit WS close failed: ${error.message}`);
+    }
+  }
+
+  wsConnections.clear();
+}
+
+function scheduleWsReconnect() {
+  if (!wsShouldReconnect || wsReconnectTimer) {
+    return;
+  }
+
+  wsReconnectTimer = setTimeout(() => {
+    wsReconnectTimer = null;
+    startBybitTickerWebSocket();
+  }, BYBIT_WS_RECONNECT_DELAY_MS);
+}
+
+function handleTickerWsMessage(rawMessage) {
+  let message;
+
+  try {
+    message = JSON.parse(rawMessage.toString());
+  } catch (error) {
+    logger.warn(`Bybit WS message parse failed: ${error.message}`);
+    return;
+  }
+
+  if (message.op === 'pong' || message.success === true) {
+    return;
+  }
+
+  const topic = message.topic;
+  const payload = message.data;
+
+  if (!topic?.startsWith('tickers.') || !payload) {
+    return;
+  }
+
+  const symbol = topic.slice('tickers.'.length).toUpperCase();
+  upsertTickerFromPatch(symbol, payload);
+}
+
+function startBybitTickerWebSocket() {
+  const symbols = Array.from(bybitSymbols.size > 0 ? bybitSymbols : loadStaticBybitSymbols())
+    .filter((symbol) => typeof symbol === 'string' && symbol.endsWith('USDT'));
+
+  if (symbols.length === 0) {
+    logger.warn('Bybit WS not started: no symbols available');
+    return;
+  }
+
+  wsShouldReconnect = true;
+  closeTickerSockets();
+
+  const chunks = chunkArray(symbols, BYBIT_WS_BATCH_SIZE);
+
+  for (const [index, symbolsChunk] of chunks.entries()) {
+    const socket = new WebSocket(BYBIT_WS_URL);
+    wsConnections.add(socket);
+
+    socket.on('open', () => {
+      const args = symbolsChunk.map((symbol) => `tickers.${symbol}`);
+      socket.send(JSON.stringify({ op: 'subscribe', args }));
+      logger.info(`Bybit WS ticker batch ${index + 1}/${chunks.length} subscribed: ${symbolsChunk.length} symbols`);
+
+      const pingTimer = setInterval(() => {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ op: 'ping' }));
+        }
+      }, BYBIT_WS_PING_INTERVAL_MS);
+      wsPingTimers.set(socket, pingTimer);
+    });
+
+    socket.on('message', handleTickerWsMessage);
+
+    socket.on('error', (error) => {
+      logger.warn(`Bybit WS ticker batch ${index + 1} error: ${error.message}`);
+    });
+
+    socket.on('close', () => {
+      const pingTimer = wsPingTimers.get(socket);
+
+      if (pingTimer) {
+        clearInterval(pingTimer);
+        wsPingTimers.delete(socket);
+      }
+
+      wsConnections.delete(socket);
+      logger.warn(`Bybit WS ticker batch ${index + 1} closed`);
+      scheduleWsReconnect();
+    });
+  }
+
+  logger.info(`Bybit WS ticker scanner started: ${symbols.length} symbols, ${chunks.length} connections`);
+}
+
 function startTickerStream(onScan) {
   scanHandler = onScan;
 
-  loadBybitSymbols().catch((error) => {
+  loadBybitSymbols().then(() => {
+    startBybitTickerWebSocket();
+  }).catch((error) => {
     logger.warn(`Initial Bybit symbols load failed: ${error.message}`);
-  });
-
-  fetchBybitTickers().catch((error) => {
-    logger.warn(`Initial Bybit ticker fetch failed: ${error.message}`);
+    bybitSymbols = loadStaticBybitSymbols();
+    startBybitTickerWebSocket();
   });
 
   if (!symbolRefreshTimer) {
     symbolRefreshTimer = setInterval(() => {
-      loadBybitSymbols().catch((error) => {
+      loadBybitSymbols().then(() => {
+        startBybitTickerWebSocket();
+      }).catch((error) => {
         logger.warn(`Scheduled Bybit symbols refresh failed: ${error.message}`);
       });
     }, SYMBOL_REFRESH_INTERVAL_MS);
@@ -292,11 +444,20 @@ function startTickerStream(onScan) {
         logger.error(`Bybit ticker scanner interval failed: ${error.message}`);
       });
     }, config.SCAN_INTERVAL_MINUTES * 60 * 1000);
-    logger.info(`Bybit REST scanner interval started: every ${config.SCAN_INTERVAL_MINUTES} minutes`);
+    logger.info(`Bybit WS scanner interval started: every ${config.SCAN_INTERVAL_MINUTES} minutes`);
   }
 }
 
 function stopTickerStream() {
+  wsShouldReconnect = false;
+
+  if (wsReconnectTimer) {
+    clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
+  }
+
+  closeTickerSockets();
+
   if (symbolRefreshTimer) {
     clearInterval(symbolRefreshTimer);
     symbolRefreshTimer = null;
@@ -307,7 +468,7 @@ function stopTickerStream() {
     scanTimer = null;
   }
 
-  logger.info('Bybit REST scanner stopped');
+  logger.info('Bybit WS scanner stopped');
 }
 
 function getCachedTicker(symbol) {
@@ -484,6 +645,7 @@ module.exports = {
   loadBybitSymbols,
   fetchBybitTickers,
   fetchBybitTicker,
+  startBybitTickerWebSocket,
   getCachedTicker,
   getCachedPrice,
   getCacheSize,

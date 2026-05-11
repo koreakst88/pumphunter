@@ -2,6 +2,7 @@ module.exports = new Set([
   'BTCUSDT',
   'ETHUSDT',
   'SOLUSDT',
+  'BUSDT',
   'BNBUSDT',
   'XRPUSDT',
   'DOGEUSDT',
