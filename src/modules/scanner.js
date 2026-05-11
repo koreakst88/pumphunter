@@ -620,15 +620,36 @@ async function scanMarket() {
     return [];
   }
 
-  const candidates = Array.from(tickers.values())
-    .map((coin) => ({
-      ...coin,
-      change1h: getRealChange1h(coin.symbol),
-    }))
-    .filter((coin) => Number.isFinite(coin.volume24h))
-    .filter((coin) => isKnownBybitSymbol(coin.symbol))
-    .filter((coin) => coin.change1h !== null && coin.change1h >= config.LONG_MIN_PUMP)
-    .filter((coin) => canSendSignal(coin.symbol))
+  const allCoins = Array.from(tickers.values()).map((coin) => ({
+    ...coin,
+    change1h: getRealChange1h(coin.symbol),
+  }));
+  logger.info(`[DIAG] Total tickers in cache: ${allCoins.length}`);
+
+  const withVolume = allCoins.filter((coin) => Number.isFinite(coin.volume24h));
+  logger.info(`[DIAG] After volume filter: ${withVolume.length} (dropped ${allCoins.length - withVolume.length})`);
+
+  const knownSymbol = withVolume.filter((coin) => isKnownBybitSymbol(coin.symbol));
+  logger.info(`[DIAG] After known symbol filter: ${knownSymbol.length}`);
+
+  const nullChange = knownSymbol.filter((coin) => coin.change1h === null).length;
+  const nanChange = knownSymbol.filter((coin) => !Number.isFinite(coin.change1h) && coin.change1h !== null).length;
+  const changes = knownSymbol.map((coin) => coin.change1h).filter((change) => Number.isFinite(change));
+  const maxChange = changes.length ? Math.max(...changes) : null;
+  const top5 = knownSymbol
+    .filter((coin) => Number.isFinite(coin.change1h))
+    .sort((a, b) => b.change1h - a.change1h)
+    .slice(0, 5)
+    .map((coin) => `${coin.symbol}=${coin.change1h?.toFixed(2)}%`);
+  logger.info(`[DIAG] change1h stats: null=${nullChange}, nan=${nanChange}, max=${maxChange?.toFixed(2)}%, top5=[${top5.join(', ')}]`);
+
+  const withChange = knownSymbol.filter((coin) => coin.change1h !== null && coin.change1h >= config.LONG_MIN_PUMP);
+  logger.info(`[DIAG] After change1h >= ${config.LONG_MIN_PUMP}% filter: ${withChange.length}`);
+
+  const canSend = withChange.filter((coin) => canSendSignal(coin.symbol));
+  logger.info(`[DIAG] After canSendSignal filter: ${canSend.length} (dropped ${withChange.length - canSend.length})`);
+
+  const candidates = canSend
     .sort((a, b) => b.volume24h - a.volume24h)
     .slice(0, config.TOP_COINS_COUNT);
 
