@@ -18,7 +18,7 @@ function buildStartupMessage() {
     `Депозит: $${config.INITIAL_DEPOSIT}`,
     `Дневной лимит: -$${dailyLimit}`,
     `Сканирование: каждые ${config.SCAN_INTERVAL_MINUTES} минут`,
-    `Тихие часы: ${String(config.QUIET_HOURS_START).padStart(2, '0')}:00 - ${String(config.QUIET_HOURS_END).padStart(2, '0')}:00 UTC`,
+    'Тихие часы: 00:00 - 07:00 KST (15:00 - 22:00 UTC)',
     '',
     '/help — список команд',
   ].join('\n');
