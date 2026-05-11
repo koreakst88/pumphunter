@@ -617,13 +617,23 @@ async function startBot() {
     logger.error(`Telegram command menu registration failed: ${error.message}`);
   }
 
-  bot.launch()
-    .then(() => {
-      logger.info('Telegram bot started');
-    })
-    .catch((error) => {
-      logger.error(`Telegram bot launch failed: ${error.message}`);
-    });
+  async function launchWithRetry() {
+    try {
+      await bot.launch();
+      logger.info('Telegram bot started successfully');
+    } catch (err) {
+      if (err.message && err.message.includes('409')) {
+        logger.warn('Telegram 409: another instance active, retrying in 30s');
+        setTimeout(launchWithRetry, 30_000);
+        return;
+      }
+
+      logger.error('Telegram bot launch failed:', err.message);
+      throw err;
+    }
+  }
+
+  launchWithRetry();
 
   logger.info('Telegram bot launch requested');
 }
