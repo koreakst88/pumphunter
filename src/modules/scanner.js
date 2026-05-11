@@ -6,7 +6,7 @@ const logger = require('../utils/logger');
 
 const BYBIT_BASE_URL = 'https://api.bybit.com';
 const BYBIT_WS_URL = 'wss://stream.bybit.com/v5/public/linear';
-const BYBIT_WS_BATCH_SIZE = 100;
+const BYBIT_WS_BATCH_SIZE = 10;
 const BYBIT_WS_PING_INTERVAL_MS = 20_000;
 const BYBIT_WS_RECONNECT_DELAY_MS = 5_000;
 const PRICE_HISTORY_RETENTION_MS = 70 * 60 * 1000;
@@ -37,6 +37,9 @@ let isFetchingTickers = false;
 let lastTickerFetchAt = 0;
 let bybitSymbols = new Set();
 let wsShouldReconnect = false;
+let wsMessagesReceived = 0;
+let wsTickerUpdates = 0;
+let firstTickerSampleLogged = false;
 const wsConnections = new Set();
 const wsPingTimers = new Map();
 
@@ -339,6 +342,7 @@ function scheduleWsReconnect() {
 }
 
 function handleTickerWsMessage(rawMessage) {
+  wsMessagesReceived += 1;
   let message;
 
   try {
@@ -360,7 +364,20 @@ function handleTickerWsMessage(rawMessage) {
   }
 
   const symbol = topic.slice('tickers.'.length).toUpperCase();
-  upsertTickerFromPatch(symbol, payload);
+  const ticker = upsertTickerFromPatch(symbol, payload);
+
+  if (ticker) {
+    wsTickerUpdates += 1;
+
+    if (!firstTickerSampleLogged) {
+      firstTickerSampleLogged = true;
+      logger.info(`Bybit WS ticker sample: ${JSON.stringify({ topic, type: message.type, data: payload })}`);
+    }
+
+    if (wsTickerUpdates === 1 || wsTickerUpdates === 10 || wsTickerUpdates === 100) {
+      logger.info(`Bybit WS ticker cache updated: updates=${wsTickerUpdates}, cache=${tickers.size}`);
+    }
+  }
 }
 
 function startBybitTickerWebSocket() {
@@ -488,6 +505,18 @@ function getCachedPrice(symbol) {
 
 function getCacheSize() {
   return tickers.size;
+}
+
+function getWsStatus() {
+  return {
+    connections: wsConnections.size,
+    openConnections: Array.from(wsConnections).filter((socket) => socket.readyState === WebSocket.OPEN).length,
+    messagesReceived: wsMessagesReceived,
+    tickerUpdates: wsTickerUpdates,
+    cacheSize: tickers.size,
+    symbols: bybitSymbols.size,
+    connected: isConnected(),
+  };
 }
 
 function isConnected() {
@@ -649,6 +678,7 @@ module.exports = {
   getCachedTicker,
   getCachedPrice,
   getCacheSize,
+  getWsStatus,
   isConnected,
   isKnownBybitSymbol,
   getBybitSymbolCount,

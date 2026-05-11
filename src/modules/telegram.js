@@ -475,12 +475,29 @@ if (bot) {
     try {
       const price = scanner.getCachedPrice('BTCUSDT');
       const cacheSize = scanner.getCacheSize();
+      const wsStatus = scanner.getWsStatus();
 
       if (!price) {
-        return ctx.reply('⏳ Кэш заполняется, подожди 30 секунд');
+        return ctx.reply(
+          [
+            '⏳ Кэш пока пустой',
+            '',
+            `WS: ${wsStatus.openConnections}/${wsStatus.connections} соединений`,
+            `Сообщений: ${wsStatus.messagesReceived}`,
+            `Обновлений тикеров: ${wsStatus.tickerUpdates}`,
+            `Кэш: ${wsStatus.cacheSize} монет`,
+            `Symbols: ${wsStatus.symbols}`,
+          ].join('\n')
+        );
       }
 
-      return ctx.reply(`✅ Сканер работает. BTC: ${formatPrice(price)} (из Bybit ticker кэша, ${cacheSize} монет)`);
+      return ctx.reply(
+        [
+          `✅ Сканер работает. BTC: ${formatPrice(price)}`,
+          `Кэш Bybit WS: ${cacheSize} монет`,
+          `WS: ${wsStatus.openConnections}/${wsStatus.connections} соединений`,
+        ].join('\n')
+      );
     } catch (error) {
       logger.error(`/ping failed: ${error.stack || error.message}`);
       return ctx.reply(COMMAND_ERROR_MESSAGE);
