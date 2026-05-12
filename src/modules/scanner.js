@@ -1,11 +1,11 @@
 const axios = require('axios');
 const WebSocket = require('ws');
 const config = require('../config');
-const exchange = require('./exchange');
 const logger = require('../utils/logger');
 
 const BYBIT_BASE_URL = 'https://api.bybit.com';
 const BYBIT_WS_URL = 'wss://stream.bybit.com/v5/public/linear';
+const COINGECKO_MARKETS_URL = 'https://api.coingecko.com/api/v3/coins/markets';
 const BYBIT_WS_BATCH_SIZE = 10;
 const BYBIT_WS_PING_INTERVAL_MS = 20_000;
 const BYBIT_WS_RECONNECT_DELAY_MS = 5_000;
@@ -146,24 +146,64 @@ function loadStaticBybitSymbols() {
 
 async function loadBybitSymbols() {
   try {
-    const apiSymbols = await exchange.getBybitSymbols();
-    const symbols = apiSymbols instanceof Map
-      ? new Set(apiSymbols.keys())
-      : new Set(apiSymbols || []);
+    const symbols = new Set(await loadTopSymbolsFromCoinGecko());
 
     if (symbols.size === 0) {
-      throw new Error('Bybit API returned an empty symbol list');
+      throw new Error('CoinGecko returned an empty Bybit-compatible symbol list');
     }
 
     bybitSymbols = symbols;
-    logger.info(`Bybit symbols: loaded from API (${bybitSymbols.size})`);
+    logger.info(`Bybit symbols: loaded from CoinGecko top volume list (${bybitSymbols.size})`);
     return bybitSymbols;
   } catch (error) {
     bybitSymbols = loadStaticBybitSymbols();
     logger.warn(`Bybit symbols: using static fallback (${bybitSymbols.size})`);
-    logger.warn(`Bybit symbols API load failed: ${error.message}`);
+    logger.warn(`CoinGecko symbols load failed: ${error.message}`);
     return bybitSymbols;
   }
+}
+
+async function loadTopSymbolsFromCoinGecko(limit = 300) {
+  if (tickers.size === 0) {
+    await fetchBybitTickers();
+  }
+
+  const response = await axios.get(COINGECKO_MARKETS_URL, {
+    timeout: 30_000,
+    headers: {
+      'User-Agent': 'Mozilla/5.0',
+      Accept: 'application/json',
+    },
+    params: {
+      vs_currency: 'usdt',
+      order: 'volume_desc',
+      per_page: Math.min(limit, 250),
+      page: 1,
+    },
+  });
+
+  const markets = Array.isArray(response.data) ? response.data : [];
+  const symbols = [];
+  const seen = new Set();
+
+  for (const coin of markets) {
+    const symbol = typeof coin?.symbol === 'string'
+      ? `${coin.symbol.toUpperCase()}USDT`
+      : null;
+
+    if (!symbol || seen.has(symbol) || !tickers.has(symbol)) {
+      continue;
+    }
+
+    seen.add(symbol);
+    symbols.push(symbol);
+
+    if (symbols.length >= limit) {
+      break;
+    }
+  }
+
+  return symbols;
 }
 
 function recordPricePoint(symbol, price, timestamp = Date.now()) {
@@ -712,6 +752,7 @@ module.exports = {
   canSendSignal,
   markSignalSent,
   loadBybitSymbols,
+  loadTopSymbolsFromCoinGecko,
   fetchBybitTickers,
   fetchBybitTicker,
   startBybitTickerWebSocket,
